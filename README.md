@@ -1,6 +1,6 @@
 # LibProsperoPkg
 
-A .NET class library for building **PS5** packages. It turns a prepared
+An almost complete .NET class library for building **PS5** packages. It turns a prepared
 application folder into a complete, signed PS5 package in-process, with no external
 command-line tool to install.
 
