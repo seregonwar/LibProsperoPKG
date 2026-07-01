@@ -128,3 +128,15 @@ the `--oformat nwonly` path.
 - **`ProsperoPlayGo`** — generates the auxiliary `sce_sys` files (`about/right.sprx`,
   `playgo-chunk.dat`, `playgo-manifest.xml`) that the builder injects into the inner PFS so the
   produced file set is complete.
+
+---
+
+## `LibProsperoPkg.Content` — content file codecs
+
+- **`ProsperoUcp`** — reads, builds, validates, verifies, and repairs UCP archives
+  (`trophy2/*.ucp`, `uds/*.ucp`). `IsUcp`, `Read`, `Build`, `BuildFromDirectory`, `Validate`,
+  `VerifyDigest`, and `WithRepairedDigest`.
+- **`ProsperoFself`** — parses SELF containers and generates a fake-self from a 64-bit ELF.
+  `IsSelf`, `IsElf`, `Parse`, `Validate`, and `MakeFself` (with `FselfOptions` for app and firmware
+  version and an optional authority id). The read model exposes `SelfImage`, `SelfSegment`, and
+  `SelfExtInfo`.

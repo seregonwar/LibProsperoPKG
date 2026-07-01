@@ -12,6 +12,7 @@
 // outer PFS decrypts back to the inner image, and every internal digest is self-consistent.
 
 #nullable enable
+using LibProsperoPkg.Content;
 using LibProsperoPkg.PFS;
 using LibProsperoPkg.PFS.Compression;
 using LibProsperoPkg.Util;
@@ -464,27 +465,14 @@ public static class ProsperoPkgBuilder
                 AddFile(sceSys, "keystone", keystone);
             }
 
-            // sce_sys/about/right.sprx — the fixed PS5 debug "right" module embedded in every
-            // reference debug package. Injected only when the embedded resource is available.
-            byte[]? rightSprx = LibProsperoPkg.PlayGo.ProsperoPlayGo.GetRightSprx();
-            if (rightSprx is { Length: > 0 })
-            {
-                var about = sceSys.Dirs.FirstOrDefault(d => d.name == "about");
-                if (about == null)
-                {
-                    about = new FSDir { name = "about", Parent = sceSys };
-                    sceSys.Dirs.Add(about);
-                }
-                if (!about.Files.Any(f => f.name == "right.sprx"))
-                    AddFile(about, "right.sprx", rightSprx);
-            }
+            EnsureAboutRightSprx(sceSys);
+            EnsureUcpArchives(sceSys);
 
             // NOTE: imagedigs.dat and the PlayGo descriptors (playgo-chunk.dat, playgo-hash-table.dat,
-            // playgo-ficm.dat) are NOT inner-PFS files. Reference package layout shows
-            // (parsed from the CNT entry table) is that they are OUTER CNT entries — ids 0x040A,
-            // 0x1001, 0x2010, 0x2011 respectively — and the inner-PFS builder deliberately filters any
-            // sce_sys file whose name is a known CNT id out of the inner image. They are generated as
-            // CNT entries in BuildContainer instead.
+            // playgo-ficm.dat) are NOT inner-PFS files. They are OUTER CNT entries — ids 0x040A, 0x1001,
+            // 0x2010, 0x2011 — and the inner-PFS builder deliberately filters any sce_sys file whose name
+            // is a known CNT id out of the inner image. They are generated as CNT entries in
+            // BuildContainer instead.
         }
         return root;
 
@@ -508,6 +496,64 @@ public static class ProsperoPkgBuilder
                 node.Files.Add(new FSFile(file) { name = name, Parent = node });
             }
         }
+    }
+
+    // sce_sys/about/right.sprx — the entitlement module the runtime loads from the package's about
+    // directory. A supplied file always wins; when the project does not ship one, the embedded debug
+    // module is injected so the package layout is complete. The publishing tool selects this module
+    // by content type from a fixed embedded set; the library ships one debug default and never
+    // rewrites a caller-supplied module.
+    private static void EnsureAboutRightSprx(FSDir sceSys)
+    {
+        var about = FindDir(sceSys, "about");
+        if (about != null && about.Files.Any(f => f.name == "right.sprx"))
+            return;
+
+        byte[]? module = LibProsperoPkg.PlayGo.ProsperoPlayGo.GetRightSprx();
+        if (module is not { Length: > 0 })
+            return;
+
+        if (about == null)
+        {
+            about = new FSDir { name = "about", Parent = sceSys };
+            sceSys.Dirs.Add(about);
+        }
+        AddInMemoryFile(about, "right.sprx", module);
+    }
+
+    // sce_sys/trophy2 and sce_sys/uds carry UCP archives (trophyNN.ucp / udsNN.ucp). A supplied
+    // archive is packed as-is, but its whole-file digest is refreshed first so a re-assembled or
+    // edited archive still validates on load. Fresh archives are produced from loose assets with
+    // ProsperoUcp.BuildFromDirectory and placed here by the caller.
+    private static void EnsureUcpArchives(FSDir sceSys)
+    {
+        foreach (var dirName in new[] { "trophy2", "uds" })
+        {
+            var dir = FindDir(sceSys, dirName);
+            if (dir == null) continue;
+            for (int i = 0; i < dir.Files.Count; i++)
+            {
+                var file = dir.Files[i];
+                if (!file.name.EndsWith(".ucp", StringComparison.OrdinalIgnoreCase)) continue;
+                byte[] bytes = ReadNode(file);
+                if (!ProsperoUcp.IsUcp(bytes) || ProsperoUcp.VerifyDigest(bytes)) continue;
+                byte[] repaired = ProsperoUcp.WithRepairedDigest(bytes);
+                dir.Files[i] = new FSFile(s => s.Write(repaired, 0, repaired.Length), file.name, repaired.Length) { Parent = dir };
+            }
+        }
+    }
+
+    private static FSDir? FindDir(FSDir parent, string name) =>
+        parent.Dirs.FirstOrDefault(d => d.name == name);
+
+    private static void AddInMemoryFile(FSDir dir, string name, byte[] data) =>
+        dir.Files.Add(new FSFile(s => s.Write(data, 0, data.Length), name, data.Length) { Parent = dir });
+
+    private static byte[] ReadNode(FSFile file)
+    {
+        using var ms = new MemoryStream();
+        file.Write(ms);
+        return ms.ToArray();
     }
 
     private static Pkg BuildContainer(
@@ -877,13 +923,21 @@ public static class ProsperoPkgBuilder
         ("pic2.png", "pic2.dds", 0x2060),
     ];
 
+    // Entry ids that are produced by dedicated builders and must not be re-emitted from a
+    // supplied sce_sys file: param.sfo (PS4, unused on PS5) and the PlayGo chunk descriptor,
+    // which is regenerated when absent.
+    private static readonly HashSet<uint> GeneratedEntryIds = [0x1000];
+
     private static IEnumerable<Entry> CollectMediaEntries(string sourceFolder)
     {
         var sceSys = Path.Combine(sourceFolder, "sce_sys");
+        var emitted = new HashSet<uint>();
+
         foreach (var (name, id) in MediaFiles)
         {
             var path = Path.Combine(sceSys, name);
             if (!File.Exists(path)) continue;
+            emitted.Add(id);
             var data = File.ReadAllBytes(path);
             yield return new GenericEntry((EntryId)id, name) { FileData = data };
         }
@@ -912,7 +966,30 @@ public static class ProsperoPkgBuilder
                     continue;
                 }
             }
+            emitted.Add(id);
             yield return new GenericEntry((EntryId)id, dds) { FileData = data };
+        }
+
+        // System files: every remaining supplied sce_sys file whose relative path maps to a known
+        // CNT id becomes an outer CNT entry. The inner-PFS builder deliberately keeps these named
+        // system files out of the inner image (PFSBuilder skips known-id sce_sys files), so they
+        // must be carried in the outer container instead. Covers the backend-authored license,
+        // network-platform, self-info, delta-info, keymap_rp, changeinfo, pronunciation and trophy
+        // files. These blobs are packed as supplied; the library never fabricates them.
+        if (!Directory.Exists(sceSys)) yield break;
+        foreach (var file in Directory.EnumerateFiles(sceSys, "*", SearchOption.AllDirectories)
+                                      .OrderBy(p => p, StringComparer.Ordinal))
+        {
+            var rel = Path.GetRelativePath(sceSys, file).Replace('\\', '/');
+            if (!EntryNames.NameToId.TryGetValue(rel, out var id)) continue;
+            var idv = (uint)id;
+            if (rel.EndsWith(".dds", StringComparison.Ordinal)) continue; // handled by the DDS pass
+            if (GeneratedEntryIds.Contains(idv)) continue;
+            if (!emitted.Add(idv)) continue; // already emitted above
+            var data = File.ReadAllBytes(file);
+            if (!ProsperoSystemFiles.Validate(rel, data, out var error))
+                throw new InvalidDataException($"sce_sys/{rel}: {error}");
+            yield return new GenericEntry(id, rel) { FileData = data };
         }
     }
 

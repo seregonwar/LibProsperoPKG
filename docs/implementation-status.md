@@ -66,10 +66,21 @@ This document describes the current LibProsperoPkg package-building and reading 
 
 ### sce\_sys files
 
-- Generates `about/right.sprx` and injects it into the inner PFS.
+- Injects `about/right.sprx` into the inner PFS. A `right.sprx` supplied in the source tree is packed verbatim; an embedded debug module is injected only when the source provides none. `ProsperoPkgBuilder.EnsureAboutRightSprx`.
+- Reads and produces UCP archives (`trophy2/trophyNN.ucp`, `uds/udsNN.ucp`) through `Content.ProsperoUcp`. The codec parses and rebuilds both reference samples byte-for-byte, including the SHA-1 integrity digest. Public API covers reading, building from entries, building from a directory, structural validation, digest verification, and digest repair. During a build, `ProsperoPkgBuilder.EnsureUcpArchives` repairs a stale digest on a supplied `.ucp` file but never synthesizes archive contents.
+- Validates backend-signed system files before packing them, through `PKG.ProsperoSystemFiles`. `npbind.dat` (532 bytes, magic `0xD294A018`) is checked and its communication id extracted from the TLV chain; `nptitle.dat` (160 bytes, magic `NPTD`) is checked and its title id extracted; `license.dat` / `license.info` require a non-empty payload. Invalid inputs stop the build with a descriptive error.
 - Emits `playgo-chunk.dat` (CNT entry `0x1001`), `playgo-hash-table.dat` (`0x2010`), and `playgo-ficm.dat` (`0x2011`) as outer-CNT body entries.
 - Builds `playgo-hash-table.dat` as a content-independent constant structure with size `0x38 + n * 8`, where `n = ficmCount / 2`. Implemented, byte-exact.
 - Generates `icon0.dds`, `pic0.dds`, `pic1.dds`, and `pic2.dds` next to source icon/picture images as valid BC7 DX10 DDS textures.
+- Packs any backend-authored system file supplied under `sce_sys/` whose relative path maps to a known CNT id as an outer-CNT body entry: `license.dat`/`license.info` (`0x0400`/`0x0401`), `nptitle.dat` (`0x0402`), `npbind.dat` (`0x0403`), `selfinfo.dat` (`0x0404`), `origin-deltainfo.dat`/`target-deltainfo.dat` (`0x0408`/`0x0407`), `pubtoolinfo.dat` (`0x1007`), `pronunciation.xml`/`.sig` (`0x1004`/`0x1005`), `changeinfo/changeinfo*.xml` (`0x1260`+), the `keymap_rp/` image set (`0x1600`+), and `trophy/` archives. These files are excluded from the inner PFS and stored verbatim; the library never fabricates them. `CollectMediaEntries` in `ProsperoPkgBuilder`.
+
+### SELF container
+
+- Parses the SELF (Signed ELF) container through `Content.ProsperoFself`: header, segment table, embedded ELF header and program headers, and the extended-info block (authority id, program type, app and firmware version, digest).
+- Generates a fake-self from any 64-bit ELF with `MakeFself`. A digest/data segment pair is emitted for each program header whose file size is non-zero and whose type is `PT_LOAD`, module-data (`0x61000000`), relro (`0x61000010`), or comment (`0x6FFFFF00`), in program-header index order. Header size, metadata size, segment layout, and 16-byte data padding reproduce the reference module's field layout.
+- Sets the extended-info digest to `SHA-256` of the input ELF and derives the authority id and program type from the ELF type and the byte at file offset `0x3f00`. Digest and signature slots on the fake path are zero-filled.
+- Round-trips through the container parser. Validated against a set of decrypted reference modules: the type-based segment selection reproduces each module's content-segment set and every data segment matches the source program-header payload.
+- `IsSelf`, `IsElf`, `Parse`, `Validate`, and `MakeFself` form the public API. Package builds continue to embed a fixed `right.sprx` asset when the source provides none; the generator is a standalone capability for arbitrary ELF input.
 
 ### Keystone
 
@@ -145,7 +156,10 @@ This document describes the current LibProsperoPkg package-building and reading 
 | CNT GeneralDigests block | Implemented, byte-exact for tested debug packages and self-consistent builder output |
 | FIH `0xB0` nested-image-content digest | Implemented; self-consistent, exact value depends on exact inner compression bytes |
 | `imagedigs.dat` CNT entry | Implemented |
+| Supplied `sce_sys` system files (license, np, self, delta-info, keymap_rp, changeinfo, pronunciation, trophy) | Implemented; packed verbatim as outer CNT entries when present |
 | `playgo-chunk.dat`, `playgo-hash-table.dat`, `playgo-ficm.dat` | Implemented |
+| UCP archives (`trophy2/*.ucp`, `uds/*.ucp`) | Implemented, byte-exact round-trip and digest for tested reference samples |
+| `npbind.dat` / `nptitle.dat` structural validation | Implemented; validated and identifiers extracted, packed verbatim |
 | `playgo-chunk.crc` | Implemented, byte-exact for tested debug samples |
 | Debug install-metadata ZIP container | Implemented; caller supplies remaining console-produced members |
 | `pfsimage.xml` structural descriptor | Implemented; deep introspection and supplied digest rows remain incomplete |

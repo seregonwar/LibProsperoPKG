@@ -83,16 +83,24 @@ creation:
 | `0x0100` | Metas |
 | `0x0200` | Entry names |
 | `0x0400` / `0x0401` | License data / license info |
+| `0x0402` / `0x0403` / `0x0404` | `nptitle.dat` / `npbind.dat` / `selfinfo.dat` |
+| `0x0407` / `0x0408` | `target-deltainfo.dat` / `origin-deltainfo.dat` |
 | `0x040A` | `imagedigs.dat` (**unnamed** entry) — `N × 32` outer-block digest table |
 | `0x1001` | `playgo-chunk.dat` |
+| `0x1004` / `0x1005` | `pronunciation.xml` / `pronunciation.sig` |
+| `0x1007` | `pubtoolinfo.dat` |
 | `0x1200` / `0x1220` / `0x1240` | `icon0.png` / `pic0.png` / `snd0.at9` |
+| `0x1260`+ | `changeinfo/changeinfo.xml` (and `changeinfo_NN.xml`) |
 | `0x1280` / `0x12A0` / `0x12C0` / `0x2060` | `icon0.dds` / `pic0.dds` / `pic1.dds` / `pic2.dds` |
+| `0x1600`+ | `keymap_rp/...` Remote Play key-map images |
 | `0x2000` | `param.json` |
 | `0x2010` / `0x2011` | `playgo-hash-table.dat` / `playgo-ficm.dat` |
 
 > A `--oformat nwonly` debug CNT carries 13 entries:
 > `0x0001 0x0010 0x0020 0x0080 0x0100 0x0200 0x040A 0x1001 0x1200 0x1280 0x2000 0x2010 0x2011`
-> (no license entries). `imagedigs.dat` (`0x040A`) is the only **unnamed** body entry.
+> (no license entries). `imagedigs.dat` (`0x040A`) is the only **unnamed** body entry. The
+> license, network-platform, self-info, delta-info, keymap_rp, changeinfo and pronunciation entries
+> are added only when the source folder supplies those files (see §8.1).
 
 ---
 
@@ -242,7 +250,9 @@ Putting the pieces together, the library builds a package as follows:
 4. **Render the inner image** — leave it plaintext, **AES-XTS-encrypt** it with the EKPFS
    (the `pfs-image-key`; §3.3), or **PFSC-compress** it.
 5. **Build the outer PFS + `\x7FCNT`** — assemble the metadata container, the entry table and
-   the entry-name table around the inner image.
+   the entry-name table around the inner image. Any backend-authored system file supplied under
+   `sce_sys/` (license, network-platform, self-info, delta-info, keymap_rp, changeinfo,
+   pronunciation, trophy; §8.1) is added here as an outer CNT entry with its fixed id.
 6. **Sign the metadata** — RSA-3072 / SHA-256.
 7. **Finalize** — wrap the container and shared PFS image into a `\x7FFIH` **debug** image
    (signed byte `0x00`), writing the FIH header and the segment offsets/sizes.
@@ -288,5 +298,65 @@ stream. CNT-entry placement for each file is described below.
 | `pfsimage.xml` | `sce_suppl/common/etc` (SI) | Machine-readable image descriptor; reproduced through `<entries>` (see §5.4). |
 
 > **`naps_pkg_layout.dat` is NOT present in `--oformat nwonly` debug packages.** LibProsperoPkg includes a round-trip serializer/parser (`ProsperoNapsLayout`) for completeness but never fabricates the file.
+
+### 8.1 Supplied system files
+
+The source folder may contain backend-authored files under `sce_sys/` that carry a fixed CNT id:
+`license.dat` / `license.info`, `nptitle.dat`, `npbind.dat`, `selfinfo.dat`,
+`origin-deltainfo.dat` / `target-deltainfo.dat`, `pubtoolinfo.dat`, `pronunciation.xml` /
+`pronunciation.sig`, `changeinfo/changeinfo*.xml`, the `keymap_rp/` image set, and the `trophy/`
+archives.
+
+These are **outer-CNT body entries**, not inner-PFS files: the inner-image builder keeps every
+named system file out of the inner PFS, so they are carried in the `\x7FCNT` container instead.
+LibProsperoPkg packs each supplied file whose `sce_sys`-relative path maps to a known entry id
+(`ProsperoPkgBuilder.CollectMediaEntries`); files that are absent are simply skipped. The payloads
+are produced by a signing backend and are stored verbatim — the library does not generate them.
+
+`keymap_rp` uses two path shapes, flat `keymap_rp/0NN.png` and nested `keymap_rp/NN/0NN.png`; each
+image is its own CNT entry. The key-map set is capped at 1 MiB total.
+
+Because the standard `--oformat nwonly` debug package supplies none of these files, its CNT stays at
+13 entries. Each supplied system file adds one entry.
+
+### 8.2 UCP archives (`trophy2/*.ucp`, `uds/*.ucp`)
+
+The trophy set and universal data system are carried as UCP archives inside the inner PFS
+(`sce_sys/trophy2/trophyNN.ucp`, `sce_sys/uds/udsNN.ucp`). Unlike the signed system files in §8.1,
+UCP archives are inner-PFS files and are fully producible.
+
+A UCP file is a flat container: a `0x60`-byte big-endian header (magic `0xB228C60A`, version 1, total
+size, entry count, and a 20-byte SHA-1 digest at `0x1C`) followed by `0x40`-byte entry records
+(32-byte name, u64 offset, u64 size) sorted in ascending ordinal name order, then the blobs. Each
+blob begins at the next strictly-greater 16-byte boundary after the previous blob's end. The digest
+is a plain SHA-1 over the whole file with the digest field zeroed, so it can be verified and repaired
+without keys.
+
+`Content.ProsperoUcp` reads, builds (from entries or from a directory), validates, verifies, and
+repairs UCP files; the round-trip is byte-exact on the reference samples. During a build,
+`ProsperoPkgBuilder.EnsureUcpArchives` repairs a stale digest on a supplied archive but never
+synthesizes its contents.
+
+### 8.3 System-file validation
+
+Before packing, backend-signed files are structurally validated by `PKG.ProsperoSystemFiles`:
+`npbind.dat` (532 bytes, magic `0xD294A018`, communication id in the TLV chain at `0x80`) and
+`nptitle.dat` (160 bytes, magic `NPTD`, title id at `0x10`) are checked and their identifiers
+extracted; `license.dat` / `license.info` require a non-empty payload. A malformed file stops the
+build with a descriptive error rather than producing an invalid package.
+
+### 8.4 SELF container and fake-self
+
+`sce_sys/about/right.sprx` is a SELF (Signed ELF) module. `Content.ProsperoFself` parses the SELF
+header, segment table, embedded ELF header and program headers, and the extended-info block, and can
+generate a fake-self from any 64-bit ELF with `MakeFself`.
+
+The generator emits a digest/data segment pair for each program header whose file size is non-zero and
+whose type is `PT_LOAD`, module-data (`0x61000000`), relro (`0x61000010`), or comment (`0x6FFFFF00`),
+in program-header index order. The extended-info digest is `SHA-256` of the input ELF; the authority id
+and program type are derived from the ELF type and the byte at file offset `0x3f00`; digest and
+signature slots are zero-filled. A generated module round-trips through the parser and reproduces the
+segment layout of the reference module. Package builds embed a fixed `right.sprx` asset when the source
+provides none (§6); the generator is a standalone capability for arbitrary ELF input.
 
 > **Reproducibility boundary.** The keyed digests (`content/game/header/system/param/package/body/sblock/fixed-info` digests, the superblock `icv`, the FIH finalization table) require console finalization material the library does not have. LibProsperoPkg computes the SHA3-256 CNT-region and entry digests and derives `imagedigs.dat` from its own finalized outer image; the remaining console-only finalization fields are emitted as structurally valid placeholders (reported as warnings). Byte-identity to a specific reference `.pkg` additionally requires the Kraken inner encoder to produce identical compressed output.
