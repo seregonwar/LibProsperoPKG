@@ -38,15 +38,9 @@ dotnet build -c Release
 
 The output is `bin/Release/net10.0/LibProsperoPkg.dll`.
 
-To produce a NuGet package:
-
-```bash
-dotnet pack -c Release
-```
-
 ## Referencing the library
 
-From another project, reference either the compiled assembly, the NuGet package, or the
+From another project, reference either the compiled assembly or the
 project directly:
 
 ```xml

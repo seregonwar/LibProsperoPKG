@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SvenGDK
 //
 // PS5 *finalized-image* outer-PFS STRUCTURE generator for the
-// `--oformat nwonly` package. This assembles the plaintext outer-PFS
+// `nwonly` package. This assembles the plaintext outer-PFS
 // filesystem image (the 11-block "data-first" layout in the reference package) from the two outer
 // files that an nwonly image always contains - `pfs_image.dat` (the nested inner PFS image) and
 // `naps_pkg_layout.dat` - plus the fixed metadata inodes (super-root dir, inode_flat_path_table,
@@ -31,7 +31,7 @@
 // is left plaintext. See ProsperoOuterPfsImage.
 //
 // The FLT path-hash is a custom 3-lane reduced-Keccak permutation (round constant 0x8000000080008081)
-// with two fixed 64-bit seeds, validated against the reference routine and
+// with two fixed 64-bit seeds, validated against reference output and
 // byte-exact for both reference names ("pfs_image.dat", "naps_pkg_layout.dat").
 #nullable enable
 using System;
@@ -128,7 +128,7 @@ public static class ProsperoOuterPfsBuilder
     private const uint FlagsDir = 0x000C;           // unk2 | unk3 (uroot dir)
     private const uint FlagsFile = 0x000D;          // compressed | unk2 | unk3 (data files)
 
-    // --- \x7fFLT custom reduced-Keccak path hash (validated against the reference routine) ---
+    // --- \x7fFLT custom reduced-Keccak path hash (validated against reference output) ---
     private const ulong FltRoundConstant = 0x8000000080008081UL;
     private const ulong FltSeed0 = 0x92CA8AAB26A24F51UL; // written at superblock-table+0x18 -> FLT @0x30
     private const ulong FltSeed1 = 0x09BBB761A41BC44DUL; // written at superblock-table+0x20 -> FLT @0x38

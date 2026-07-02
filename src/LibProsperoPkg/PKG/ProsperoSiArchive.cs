@@ -39,8 +39,10 @@
 // members are omitted - they are never fabricated.
 // See LibProsperoPKG/docs/implementation-status.md.
 
+using LibProsperoPkg.PFS;
 using LibProsperoPkg.PlayGo;
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -64,6 +66,36 @@ public readonly record struct ProsperoSiMember(string Path, byte[] Content);
 /// <param name="Offset">Byte offset of the entry inside the container body.</param>
 /// <param name="Size">Entry size in bytes.</param>
 public readonly record struct ProsperoPfsImageEntry(string Name, long Offset, long Size);
+
+/// <summary>
+/// Self-consistent inputs for the <c>pfsimage.xml</c> <c>&lt;chunkinfo&gt;</c> section, which
+/// describes the PlayGo chunk layout of this package (single scenario / single chunk for an
+/// <c>nwonly</c> debug package). All sizes are derived from the finalized image geometry the builder
+/// already knows.
+/// </summary>
+public sealed class ProsperoChunkInfoModel
+{
+    /// <summary>Size in bytes of the copied <c>playgo-chunk.dat</c> (the <c>size</c> attribute).</summary>
+    public int PlayGoChunkDatSize { get; set; }
+
+    /// <summary>SDK version stamp (the <c>sdk</c> attribute), 32-bit hex e.g. <c>0x00000000</c>.</summary>
+    public string Sdk { get; set; } = "0x00000000";
+
+    /// <summary>Display flags (the <c>disps</c> attribute); <c>0x0011</c> for a single-chunk nwonly image.</summary>
+    public string Disps { get; set; } = "0x0011";
+
+    /// <summary>Language mask (the <c>languages</c> value); all-ones for an nwonly image.</summary>
+    public ulong LanguageMask { get; set; } = 0xffffffffffffffff;
+
+    /// <summary>Total mount-image size in bytes (scenario/chunk <c>total</c>) = pfs-image-offset + pfs-image-size.</summary>
+    public long TotalSize { get; set; }
+
+    /// <summary>Size in bytes of outer #0 (the block-aligned stored inner image).</summary>
+    public long Outer0Size { get; set; }
+
+    /// <summary>Size in bytes of outer #1 (<see cref="TotalSize"/> − <see cref="Outer0Size"/>).</summary>
+    public long Outer1Size { get; set; }
+}
 
 /// <summary>
 /// Structural inputs for the reproducible part of <c>common/etc/pfsimage.xml</c>. Every value here
@@ -190,6 +222,28 @@ public sealed class ProsperoPfsImageXmlOptions
     public byte[]? SblockDigest { get; set; }
     /// <summary>32-byte inner <c>&lt;fixed-info-digest&gt;</c> (keyed).</summary>
     public byte[]? FixedInfoDigest { get; set; }
+
+    // ---- Inode-tree introspection (self-consistent; describes the built image). ----
+
+    /// <summary>
+    /// Outer PFS image snapshot for the <c>&lt;pfs-image&gt;</c> section. When set, the section is
+    /// emitted from our own built image's inode tree + superblock geometry; when <see langword="null"/>
+    /// the section is omitted.
+    /// </summary>
+    public ProsperoPfsImageTreeInfo? OuterPfsTree { get; set; }
+
+    /// <summary>
+    /// Nested (inner) PFS image snapshot for the <c>&lt;nested-image&gt;</c> section. When set, the
+    /// section is emitted from our own built inner image's inode tree; when <see langword="null"/>
+    /// the section is omitted.
+    /// </summary>
+    public ProsperoPfsImageTreeInfo? NestedPfsTree { get; set; }
+
+    /// <summary>
+    /// PlayGo chunk layout for the <c>&lt;chunkinfo&gt;</c> section. When set, the section is emitted
+    /// from our own package geometry; when <see langword="null"/> the section is omitted.
+    /// </summary>
+    public ProsperoChunkInfoModel? ChunkInfo { get; set; }
 }
 
 /// <summary>
@@ -261,6 +315,73 @@ public static class ProsperoSiArchive
             members.Add(new($"config/{contentId}/playgo-chunk.crc", playGoChunkCrc));
 
         return members;
+    }
+
+    /// <summary>
+    /// Builds the complete debug SI segment (the trailing <c>sce_suppl</c> ZIP) for a finalized nwonly
+    /// image entirely from values the package build has already produced. This is the high-level entry
+    /// point the package builder wires into <see cref="ProsperoFihBuilder.BuildFromCnt"/> through its
+    /// <c>siArchiveFactory</c>: given the reproducible <paramref name="pfsImageXml"/> options and the
+    /// finalized <paramref name="mountImage"/> (FIH + PFS + CNT) it derives every reproducible member and
+    /// returns the raw ZIP bytes.
+    /// <list type="bullet">
+    ///   <item><c>common/etc/pfsimage.xml</c> from <paramref name="pfsImageXml"/> (real self-consistent
+    ///   digests, entries and geometry).</item>
+    ///   <item><c>common/etc/naps_meta_300/301/302/308.dat</c> derived byte-exact from the finalized-image
+    ///   inner-image size at FIH offset <see cref="ProsperoPkgLayout.FihInnerImageSizeField"/> via
+    ///   <see cref="ProsperoNapsMeta.BuildMeta300FromInnerImageSize"/>.</item>
+    ///   <item><c>common/etc/playgo-chunk.dat</c> copied verbatim from <paramref name="playGoChunkDat"/>
+    ///   (the CNT's PlayGo chunk descriptor) when present.</item>
+    ///   <item><c>config/&lt;content-id&gt;/playgo-chunk.crc</c> computed by CRC-32C over the finalized
+    ///   mount image.</item>
+    /// </list>
+    /// The keyed/encrypted <c>naps_meta_18.dat</c> metric blob has no off-console producer and is never
+    /// fabricated — it is omitted.
+    /// </summary>
+    /// <param name="pfsImageXml">Fully-populated reproducible pfsimage.xml options from the builder.</param>
+    /// <param name="playGoChunkDat">CNT PlayGo chunk descriptor bytes (entry 0x1001), or null.</param>
+    /// <param name="mountImage">The finalized FIH+PFS+CNT mount image.</param>
+    /// <param name="innerImageSize">
+    /// Block-aligned stored size of the inner <c>pfs_image.dat</c> (the FIH-0xA0 value), captured by the
+    /// builder. When positive it drives the <c>naps_meta_300</c> record directly. When 0 (e.g. a standalone
+    /// caller with only the finalized image) it falls back to reading FIH[0xA0] out of <paramref name="mountImage"/>,
+    /// which is only populated for the reference data-first layout.
+    /// </param>
+    /// <param name="warnings">Optional sink for any all-zero-placeholder notices from the XML builder.</param>
+    public static byte[] BuildDebugSiSegment(
+        ProsperoPfsImageXmlOptions pfsImageXml, byte[]? playGoChunkDat, byte[] mountImage,
+        long innerImageSize = 0, ICollection<string>? warnings = null)
+    {
+        ArgumentNullException.ThrowIfNull(pfsImageXml);
+        ArgumentNullException.ThrowIfNull(mountImage);
+
+        // naps_meta_300 R = InnerImageSize - 0x10000 (block-aligned inner-image size minus one FIH block).
+        // Prefer the builder-captured InnerImageSize; when it is not supplied (standalone callers), read
+        // FIH[0xA0] out of the mount image, which is only populated for the reference data-first layout.
+        // Below one block the record cannot be derived, so it is simply omitted (never faked).
+        byte[]? napsMeta300 = null;
+        ulong innerSize = innerImageSize > 0 ? (ulong)innerImageSize : 0;
+        if (innerSize == 0)
+        {
+            int sizeField = ProsperoPkgLayout.FihInnerImageSizeField;
+            if (mountImage.Length >= sizeField + 8)
+                innerSize = BinaryPrimitives.ReadUInt64LittleEndian(mountImage.AsSpan(sizeField, 8));
+        }
+        if (innerSize >= ProsperoNapsMeta.PfsBlockSize)
+            napsMeta300 = ProsperoNapsMeta.BuildMeta300FromInnerImageSize(innerSize);
+
+        byte[] xmlBytes = Encoding.UTF8.GetBytes(BuildPfsImageXml(pfsImageXml, warnings));
+
+        IReadOnlyList<ProsperoSiMember> members = BuildMembers(
+            pfsImageXml.ContentId,
+            xmlBytes,
+            playGoChunkDat: playGoChunkDat,
+            napsMeta18: null,                 // keyed per-package metric blob — never fabricated.
+            napsMeta300: napsMeta300,
+            playGoChunkCrc: null,
+            finalizedMountImage: mountImage); // computes playgo-chunk.crc reproducibly (CRC-32C).
+
+        return WriteZip(members);
     }
 
     /// <summary>
@@ -407,6 +528,7 @@ public static class ProsperoSiArchive
                 sb.Append($"    <entry offset=\"{Hex8(e.Offset)}\" size=\"{Hex8(e.Size)}\" name=\"{e.Name}\"/>\n");
             sb.Append("  </entries>\n");
         }
+        AppendStageB(sb, options);
         sb.Append("</package-configuration>\n");
         return sb.ToString();
     }
@@ -426,5 +548,170 @@ public static class ProsperoSiArchive
             : o.ContentType;
         string master16 = o.LongNameMasterValue.ToString("x16", CultureInfo.InvariantCulture);
         return $"{o.ContentId}-C{versionDigits}-M{master16}-{typeCode}";
+    }
+
+    // ------------------------------------------------------------------------------------------
+    // <chunkinfo> / <pfs-image> / <nested-image> introspection sections.
+    //
+    // These describe the layout of the image THIS builder produced: the outer + inner PFS inode
+    // trees and the PlayGo chunk map, read straight from the build state (PfsBuilder.CaptureImageTree
+    // and the finalized geometry). They are self-consistent with the emitted bytes (block indices
+    // reflect the superblock-first layout, the outer seed is deterministic all-zeros, and inner files
+    // are stored raw so nested files show size == plain). The console loader does not read the
+    // supplemental ZIP, so these sections are completeness polish, not an install requirement.
+    // ------------------------------------------------------------------------------------------
+
+    /// <summary>
+    /// Appends the introspection sections for whichever of
+    /// <see cref="ProsperoPfsImageXmlOptions.ChunkInfo"/>, <see cref="ProsperoPfsImageXmlOptions.OuterPfsTree"/>
+    /// and <see cref="ProsperoPfsImageXmlOptions.NestedPfsTree"/> are supplied.
+    /// </summary>
+    private static void AppendStageB(StringBuilder sb, ProsperoPfsImageXmlOptions options)
+    {
+        if (options.ChunkInfo is { } chunk)
+            AppendChunkInfo(sb, options.ContentId, chunk);
+        if (options.OuterPfsTree is { } outer)
+            AppendPfsImage(sb, outer, options.PfsImageOffset);
+        if (options.NestedPfsTree is { } nested)
+            AppendNestedImage(sb, nested);
+    }
+
+    private static void AppendChunkInfo(StringBuilder sb, string contentId, ProsperoChunkInfoModel c)
+    {
+        string lang = "0x" + c.LanguageMask.ToString("x16", CultureInfo.InvariantCulture);
+        sb.Append($"  <chunkinfo size=\"{c.PlayGoChunkDatSize}\" nested=\"true\" sdk=\"{c.Sdk}\" disps=\"{c.Disps}\">\n");
+        sb.Append($"    <contentid>{contentId}</contentid>\n");
+        sb.Append($"    <languages default=\"1\">{lang}</languages>\n");
+        sb.Append("    <scenarios num=\"1\" default=\"0\" groups=\"0\">\n");
+        sb.Append("      <scenario id=\"0\" type=\"33\" name=\"Scenario #0\">\n");
+        sb.Append($"        <overall initials=\"1\" num=\"1\" init-size=\"{c.TotalSize}\" total=\"{c.TotalSize}\">0</overall>\n");
+        sb.Append($"        <default initials=\"1\" num=\"1\" init-size=\"{c.TotalSize}\" total=\"{c.TotalSize}\">0</default>\n");
+        sb.Append("      </scenario>\n");
+        sb.Append("    </scenarios>\n");
+        sb.Append("    <chunks num=\"1\" default=\"0xffffffffffffffff\">\n");
+        sb.Append($"      <chunk id=\"0\" flag=\"0x80\" locus=\"0x03\" language=\"{lang}\" disps=\"{c.Disps}\" num=\"2\" size=\"{c.TotalSize}\" name=\"Chunk #0\">0 1</chunk>\n");
+        sb.Append("    </chunks>\n");
+        sb.Append("    <outers num=\"2\" overlapped=\"0\" language-overlapped=\"0\">\n");
+        sb.Append($"      <outer id=\"0\" image=\"0\" offset=\"{Hex16Blob(0)}\" size=\"{Hex16Blob(c.Outer0Size)}\" chunks=\"1\"/>\n");
+        sb.Append($"      <outer id=\"1\" image=\"0\" offset=\"{Hex16Blob(c.Outer0Size)}\" size=\"{Hex16Blob(c.Outer1Size)}\" chunks=\"1\"/>\n");
+        sb.Append("    </outers>\n");
+        sb.Append("  </chunkinfo>\n");
+    }
+
+    private static void AppendPfsImage(StringBuilder sb, ProsperoPfsImageTreeInfo info, long pfsImageOffset)
+    {
+        long metadata = (long)info.DinodeBlock * info.BlockSize;
+        sb.Append($"  <pfs-image version=\"2\" readonly=\"true\" offset=\"{pfsImageOffset}\" metadata=\"{metadata}\">\n");
+        string signed = info.Signed ? " signed=\"true\"" : "";
+        string encrypted = info.Encrypted ? " encrypted=\"true\"" : "";
+        sb.Append($"    <sblock{signed}{encrypted} ignore-case=\"true\" index-size=\"32\" blocks=\"{info.DinodeBlockCount}\" backups=\"0\">\n");
+        AppendSuperInode(sb, info);
+        sb.Append($"      <seed>{Hex16Blob(info.Seed, 16)}</seed>\n");
+        sb.Append($"      <icv>{Hex16Blob(info.SuperblockIcv, 32)}</icv>\n");
+        sb.Append("    </sblock>\n");
+        AppendOuterNode(sb, info.Root, info.BlockSize, "    ");
+        sb.Append("  </pfs-image>\n");
+    }
+
+    private static void AppendNestedImage(StringBuilder sb, ProsperoPfsImageTreeInfo info)
+    {
+        sb.Append("  <nested-image version=\"2\" readonly=\"true\" offset=\"0\">\n");
+        sb.Append($"    <sblock ignore-case=\"true\" index-size=\"32\" blocks=\"{info.DinodeBlockCount}\" backups=\"0\">\n");
+        AppendSuperInode(sb, info);
+        sb.Append("    </sblock>\n");
+        int afid = 0;
+        AppendNestedNode(sb, info.Root, info.BlockSize, ref afid, "    ");
+        sb.Append("  </nested-image>\n");
+    }
+
+    private static void AppendSuperInode(StringBuilder sb, ProsperoPfsImageTreeInfo info)
+    {
+        sb.Append($"      <image-size block-size=\"{info.BlockSize}\" num=\"{info.ImageBlocks}\">{Hex16Blob(info.ImageBlocks * info.BlockSize)}</image-size>\n");
+        sb.Append($"      <super-inode blocks=\"{info.DinodeBlockCount}\" inodes=\"{info.InodeCount}\" root=\"{info.RootInodeNumber}\">\n");
+        sb.Append($"        <inode size=\"{info.DinodeSize}\" links=\"1\" mode=\"0x0000\" imode=\"{Imode(info.DinodeFlags)}\" index=\"{info.DinodeBlock}\"/>\n");
+        sb.Append("      </super-inode>\n");
+    }
+
+    // Outer <pfs-image> tree: block-index oriented, imode only (no per-node mode), matching the
+    // reference <pfs-image><root> convention.
+    private static void AppendOuterNode(StringBuilder sb, ProsperoPfsImageNode n, int blockSize, string pad)
+    {
+        string child = pad + "  ";
+        if (n.IsDirectory)
+        {
+            string tag = n.Name.Length == 0 ? "root" : "dir";
+            sb.Append($"{pad}<{tag} size=\"{n.StoredSize}\" links=\"{n.Nlink}\" imode=\"{Imode(n.Flags)}\" index=\"{n.StartBlock}\" inode=\"{n.InodeNumber}\" name=\"{n.Name}\">\n");
+            foreach (var c in n.Children)
+                AppendOuterNode(sb, c, blockSize, child);
+            sb.Append($"{pad}</{tag}>\n");
+        }
+        else
+        {
+            string comp = !n.Internal && n.Compressed
+                ? $" plain=\"{n.PlainSize}\" comp=\"{CompLabel(n.StoredSize, n.PlainSize, blockSize)}\""
+                : "";
+            sb.Append($"{pad}<file size=\"{n.StoredSize}\"{comp} imode=\"{Imode(n.Flags)}\" index=\"{IndexRange(n)}\" inode=\"{n.InodeNumber}\" name=\"{n.Name}\"/>\n");
+        }
+    }
+
+    // Nested <nested-image> tree: byte-offset oriented, with mode + imode + afid + chunk on user
+    // files, matching the reference <nested-image><root> convention. Physical package offsets
+    // (poffset) are omitted because they are not stable for our compressed inner image.
+    private static void AppendNestedNode(StringBuilder sb, ProsperoPfsImageNode n, int blockSize, ref int afid, string pad)
+    {
+        string child = pad + "  ";
+        if (n.IsDirectory)
+        {
+            if (n.Name.Length == 0)
+            {
+                sb.Append($"{pad}<root plain=\"{n.PlainSize}\" links=\"{n.Nlink}\" imode=\"{Imode(n.Flags)}\" inode=\"{n.InodeNumber}\" name=\"\">\n");
+                foreach (var c in n.Children)
+                    AppendNestedNode(sb, c, blockSize, ref afid, child);
+                sb.Append($"{pad}</root>\n");
+            }
+            else
+            {
+                sb.Append($"{pad}<dir plain=\"{n.PlainSize}\" links=\"{n.Nlink}\" mode=\"{Mode4(n.Mode)}\" imode=\"{Imode(n.Flags)}\" inode=\"{n.InodeNumber}\" name=\"{n.Name}\">\n");
+                foreach (var c in n.Children)
+                    AppendNestedNode(sb, c, blockSize, ref afid, child);
+                sb.Append($"{pad}</dir>\n");
+            }
+        }
+        else if (n.Internal)
+        {
+            sb.Append($"{pad}<file plain=\"{n.PlainSize}\" imode=\"{Imode(n.Flags)}\" inode=\"{n.InodeNumber}\" name=\"{n.Name}\"/>\n");
+        }
+        else
+        {
+            string comp = n.Compressed ? $" comp=\"{CompLabel(n.StoredSize, n.PlainSize, blockSize)}\"" : "";
+            long offset = (long)n.StartBlock * blockSize;
+            sb.Append($"{pad}<file size=\"{n.StoredSize}\" plain=\"{n.PlainSize}\"{comp} offset=\"{offset}\" mode=\"{Mode4(n.Mode)}\" imode=\"{Imode(n.Flags)}\" inode=\"{n.InodeNumber}\" afid=\"{afid++}\" chunk=\"0\" name=\"{n.Name}\"/>\n");
+        }
+    }
+
+    private static string IndexRange(ProsperoPfsImageNode n) =>
+        n.Blocks > 1
+            ? $"{n.StartBlock}-{n.StartBlock + (int)n.Blocks - 1}"
+            : n.StartBlock.ToString(CultureInfo.InvariantCulture);
+
+    private static string CompLabel(long stored, long plain, int blockSize)
+    {
+        long pct = plain > 0 ? (long)Math.Round(stored * 100.0 / plain) : 0;
+        long a = blockSize > 0 ? (stored + blockSize - 1) / blockSize : 0;
+        long b = blockSize > 0 ? (plain + blockSize - 1) / blockSize : 0;
+        return $"{pct}% ({a}/{b})";
+    }
+
+    private static string Imode(uint flags) => "0x" + flags.ToString("x8", CultureInfo.InvariantCulture);
+    private static string Mode4(ushort mode) => "0x" + mode.ToString("x4", CultureInfo.InvariantCulture);
+    private static string Hex16Blob(long v) => "0x" + v.ToString("x16", CultureInfo.InvariantCulture);
+
+    private static string Hex16Blob(byte[]? data, int len)
+    {
+        var sb = new StringBuilder(2 + len * 2);
+        sb.Append("0x");
+        for (int i = 0; i < len; i++)
+            sb.Append((data != null && i < data.Length ? data[i] : (byte)0).ToString("X2", CultureInfo.InvariantCulture));
+        return sb.ToString();
     }
 }

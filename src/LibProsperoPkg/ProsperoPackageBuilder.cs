@@ -54,7 +54,7 @@ public enum InnerImageForm
 
     /// <summary>
     /// A PS5 PFSv3 Kraken-compressed PFS image — the codec the
-    /// <c>--oformat nwonly</c> path uses for the inner image. The container is self-describing
+    /// <c>nwonly</c> path uses for the inner image. The container is self-describing
     /// (magic <c>PFSC</c>, format version 3, 0x40000 blocks, SHA3-256 digests) and is round-trip
     /// validated in-process with the managed Kraken decoder. Distinct from <see cref="Compressed"/>,
     /// which is the zlib PFSC used for the installable inner image.
@@ -122,7 +122,7 @@ public sealed class ProsperoBuildOptions
     /// When true the inner <c>pfs_image.dat</c> is stored PFSC-compressed (shrinking the package,
     /// the dominant size driver) instead of raw. Incompressible images fall back to the raw wrapper
     /// automatically. Off by default to preserve the size-stable path. This is the zlib
-    /// PFSC used for the installable inner image; for the <c>--oformat nwonly</c> Kraken codec
+    /// PFSC used for the installable inner image; for the <c>nwonly</c> Kraken codec
     /// set <see cref="InnerCompression"/> to <see cref="ProsperoInnerCompression.Kraken"/> instead.
     /// </summary>
     public bool CompressInnerImage { get; set; }
@@ -134,7 +134,7 @@ public sealed class ProsperoBuildOptions
     /// <list type="bullet">
     /// <item><see cref="ProsperoInnerCompression.Zlib"/> — zlib PFSC (installable inner image).</item>
     /// <item><see cref="ProsperoInnerCompression.Kraken"/> — PS5 PFSv3 Kraken (the
-    /// <c>--oformat nwonly</c> inner-image codec), validated against reference output.
+    /// <c>nwonly</c> inner-image codec), validated against reference output.
     /// Incompressible images fall back to the raw wrapper automatically.</item>
     /// </list>
     /// </summary>
@@ -357,8 +357,8 @@ public static class ProsperoPackageBuilder
     /// The output is a complete <c>\x7FCNT</c> package with the inner + AES-XTS-encrypted outer PFS,
     /// all entries, every metadata digest and the header signature. The result is checked in-process
     /// with the reader and an outer-PFS decrypt round-trip; the detached metadata signature
-    /// pass then exercises the wired-in publishing key material too. On-console acceptance is
-    /// hardware-gated.
+    /// pass then exercises the wired-in publishing key material too. On-console acceptance
+    /// depends on console mode and firmware.
     /// </summary>
     private static ProsperoBuildResult BuildCore(
         ProsperoBuildOptions options, string sourceFolder, Action<string> log, List<string> warnings)
@@ -385,7 +385,7 @@ public static class ProsperoPackageBuilder
         };
 
         log("Building the PS5 package...");
-        LibProsperoPkg.PKG.ProsperoPkgBuilder.Build(buildProps, cntPath, out byte[]? nestedImageDigest, log);
+        LibProsperoPkg.PKG.ProsperoPkgBuilder.Build(buildProps, cntPath, out byte[]? nestedImageDigest, out var siInputs, log);
 
         if (!File.Exists(cntPath))
             throw new InvalidOperationException("The PS5 PKG builder did not produce an output package.");
@@ -419,8 +419,18 @@ public static class ProsperoPackageBuilder
         try
         {
             log("Finalizing the CNT into a debug (FIH) image...");
+
+            // The trailing debug SI segment (sce_suppl) is assembled from the finalized mount image so its
+            // playgo-chunk.crc and naps_meta_300 are byte-exact for the produced image. The reproducible
+            // pfsimage.xml options + PlayGo chunk descriptor were captured during the CNT build above.
+            Func<byte[], byte[]>? siFactory = siInputs is null
+                ? null
+                : mountImage => LibProsperoPkg.PKG.ProsperoSiArchive.BuildDebugSiSegment(
+                    siInputs.Xml, siInputs.PlayGoChunkDat, mountImage, siInputs.InnerImageSize, warnings);
+
             var fihWarnings = LibProsperoPkg.PKG.ProsperoFihBuilder.BuildFromCnt(
                 cntPath, finalPath, LibProsperoPkg.PKG.ProsperoFihVariant.Debug, log,
+                siArchiveFactory: siFactory,
                 nestedImageDigest: nestedImageDigest);
             warnings.AddRange(fihWarnings);
 

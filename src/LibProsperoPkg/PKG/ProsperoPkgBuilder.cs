@@ -22,8 +22,35 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 
 namespace LibProsperoPkg.PKG;
+
+/// <summary>
+/// Reproducible inputs captured during a CNT build for producing the trailing debug SI segment
+/// (<c>sce_suppl</c> ZIP). The package builder surfaces these out of
+/// <see cref="ProsperoPkgBuilder.Build(ProsperoPkgBuildProperties,string,out byte[],out ProsperoSiBuildInputs,Action{string})"/>
+/// so the finalizer (<see cref="ProsperoFihBuilder.BuildFromCnt"/>) can assemble the segment from the
+/// finalized mount image via <see cref="ProsperoSiArchive.BuildDebugSiSegment"/>.
+/// </summary>
+internal sealed class ProsperoSiBuildInputs
+{
+    /// <summary>Fully-populated reproducible pfsimage.xml options (real self-consistent digests).</summary>
+    public required ProsperoPfsImageXmlOptions Xml { get; init; }
+
+    /// <summary>PlayGo chunk descriptor bytes (CNT entry 0x1001), copied verbatim into the SI, or null.</summary>
+    public byte[]? PlayGoChunkDat { get; init; }
+
+    /// <summary>
+    /// Block-aligned stored size of the inner <c>pfs_image.dat</c> (<c>alignUp(storedSize, 0x10000)</c>) — the
+    /// value the FIH records at <see cref="ProsperoPkgLayout.FihInnerImageSizeField"/> (0xA0) in the reference
+    /// data-first layout. The SI's <c>naps_meta_300/301/302/308.dat</c> records derive from it as
+    /// <c>R = InnerImageSize - 0x10000</c> via <see cref="ProsperoNapsMeta.BuildMeta300FromInnerImageSize"/>.
+    /// It is captured here at build time because our superblock-first outer PFS leaves FIH[0xA0] at 0
+    /// (that field is only populated for the data-first layout), so it cannot be read back from the mount image.
+    /// </summary>
+    public long InnerImageSize { get; init; }
+}
 
 /// <summary>The PS5 volume kind, which selects the content-type code stamped into the header.</summary>
 public enum ProsperoVolumeType
@@ -56,7 +83,7 @@ public enum ProsperoInnerCompression
     /// PS5 PFSv3 Kraken compression (<see cref="LibProsperoPkg.PFS.Compression.ProsperoCompressedPfsImage"/>).
     /// This codec stores <c>pfs_image.dat</c> as a self-describing Kraken "PFSC" container
     /// inside a regular outer-PFS file. The container round-trips byte-exact through the decoder;
-    /// on-console package acceptance is hardware-gated.
+    /// on-console package acceptance depends on console mode and firmware.
     /// </summary>
     Kraken,
 }
@@ -85,7 +112,7 @@ public sealed class ProsperoPkgBuildProperties
     /// shrinking the package (the dominant size driver). When false (the default) the
     /// inner image is stored raw inside a PFSC wrapper. Incompressible inner images fall back to the raw wrapper
     /// automatically. The compressed form is round-trip-validated in-process before use;
-    /// on-console acceptance is hardware-gated either way.
+    /// on-console acceptance depends on console mode and firmware either way.
     /// </summary>
     /// <remarks>
     /// This is a convenience flag equivalent to <see cref="InnerCompression"/> =
@@ -129,6 +156,10 @@ public static class ProsperoPkgBuilder
     // and no multi-pass build. Its size (= outer block count x 32) is known up front from the image.
     private const uint ImagedigsEntryId = 0x040A;
 
+    // playgo-chunk.dat is CNT entry id 0x1001. Its bytes are copied verbatim into the trailing debug SI
+    // segment (common/etc/playgo-chunk.dat), so the SI capture reads them straight off the built entry.
+    private const uint PlayGoChunkDatEntryId = 0x1001;
+
     /// <summary>The content-type code for a PS5 volume kind.</summary>
     public static uint ContentTypeFor(ProsperoVolumeType type) => type switch
     {
@@ -154,7 +185,7 @@ public static class ProsperoPkgBuilder
     /// <returns>The output path.</returns>
     /// <exception cref="ArgumentException">A required property is missing or malformed.</exception>
     public static string Build(ProsperoPkgBuildProperties props, string outputPath, Action<string>? logger = null)
-        => Build(props, outputPath, out _, logger);
+        => Build(props, outputPath, out _, out _, logger);
 
     /// <summary>
     /// CNT-build overload that also surfaces the FIH 0xB0 nested-image-content digest — SHA3-256 of the
@@ -162,10 +193,13 @@ public static class ProsperoPkgBuilder
     /// inner image exists only during this build pass, so the digest is threaded out here for the caller
     /// that finalizes the CNT into a debug (FIH) image (<see cref="ProsperoFihBuilder.BuildFromCnt"/>),
     /// which would otherwise only have the encrypted CNT and fall back to a best-effort outer-image hash.
+    /// Also surfaces the reproducible <see cref="ProsperoSiBuildInputs"/> so the finalizer can assemble the
+    /// trailing debug SI segment (<c>sce_suppl</c>) from the finalized mount image.
     /// </summary>
-    internal static string Build(ProsperoPkgBuildProperties props, string outputPath, out byte[]? nestedImageDigest, Action<string>? logger = null)
+    internal static string Build(ProsperoPkgBuildProperties props, string outputPath, out byte[]? nestedImageDigest, out ProsperoSiBuildInputs? siInputs, Action<string>? logger = null)
     {
         nestedImageDigest = null;
+        siInputs = null;
         ArgumentNullException.ThrowIfNull(props);
         ArgumentException.ThrowIfNullOrWhiteSpace(outputPath);
         var log = logger ?? (_ => { });
@@ -194,8 +228,10 @@ public static class ProsperoPkgBuilder
         // image is written, before the container bodies/digests are finalized.
         long fileTime = ToUnixSeconds(props.TimeStamp);
         byte[]? capturedNestedDigest = null;
+        ProsperoSiBuildInputs? capturedSi = null;
         BuildImageOnce();
         nestedImageDigest = capturedNestedDigest;
+        siInputs = capturedSi;
 
         log($"Done: {Path.GetFileName(outputPath)} ({new FileInfo(outputPath).Length:N0} bytes).");
         return outputPath;
@@ -266,6 +302,13 @@ public static class ProsperoPkgBuilder
                 };
                 innerFile.Parent = outerRoot;
                 outerRoot.Files.Add(innerFile);
+
+                // The block-aligned stored size of pfs_image.dat is what the FIH records at 0xA0 in the
+                // reference data-first layout and is the sole input to the SI's naps_meta_300 record
+                // (R = alignUp(storedSize) - 0x10000). Our outer PFS is superblock-first, so FIH[0xA0] is
+                // left 0; capture the value here where the stored inner-file size is known.
+                long innerImageAlignedSize =
+                    (innerFile.Size + BlockSize - 1) / BlockSize * BlockSize;
                 var outerProps = new PfsProperties
                 {
                     root = outerRoot,
@@ -277,7 +320,7 @@ public static class ProsperoPkgBuilder
                     Seed = new byte[16],
                     FileTime = fileTime,
                 };
-                var outerPfs = new PfsBuilder(outerProps, s => log($" [outer] {s}")) { CaptureImageDigests = true };
+                var outerPfs = new PfsBuilder(outerProps, s => log($" [outer] {s}")) { CaptureImageDigests = true, CaptureSuperblockIcv = true };
                 long pfsSize = outerPfs.CalculatePfsSize();
                 // imagedigs.dat (CNT entry 0x040A) = one 32-byte per-block descriptor digest
                 // per outer-image block. The outer image size is independent of the CNT body, so this
@@ -302,7 +345,27 @@ public static class ProsperoPkgBuilder
                     byte[]? captured = outerPfs.ImageDigests;
                     if (captured is { Length: > 0 } && captured.Length == imagedigsEntry.FileData.Length)
                         imagedigsEntry.FileData = captured;
-                    FinishContainer(pkg, fs, props, innerImageDigest, log);
+                    ProsperoPfsImageXmlOptions siXml = FinishContainer(pkg, fs, props, innerImageDigest, log);
+
+                    // Capture the reproducible SI inputs so the finalizer can build the sce_suppl segment:
+                    // the pfsimage.xml options (with the now-computed self-consistent digests) plus a verbatim
+                    // copy of the PlayGo chunk descriptor (CNT entry 0x1001).
+                    byte[]? playGoChunkDat = (pkg.Entries.FirstOrDefault(e => (uint)e.Id == PlayGoChunkDatEntryId) as GenericEntry)?.FileData;
+
+                    // Inode-tree introspection (self-consistent): snapshot the outer + inner PFS
+                    // inode trees and the PlayGo chunk map so pfsimage.xml describes the exact image
+                    // that was produced.
+                    long mountImageTotal = siXml.PfsImageOffset + siXml.PfsImageSize;
+                    siXml.OuterPfsTree = outerPfs.CaptureImageTree();
+                    siXml.NestedPfsTree = innerPfs.CaptureImageTree();
+                    siXml.ChunkInfo = new ProsperoChunkInfoModel
+                    {
+                        PlayGoChunkDatSize = playGoChunkDat?.Length ?? 0,
+                        TotalSize = mountImageTotal,
+                        Outer0Size = innerImageAlignedSize,
+                        Outer1Size = mountImageTotal - innerImageAlignedSize,
+                    };
+                    capturedSi = new ProsperoSiBuildInputs { Xml = siXml, PlayGoChunkDat = playGoChunkDat, InnerImageSize = innerImageAlignedSize };
                 }
             }
             finally
@@ -327,7 +390,7 @@ public static class ProsperoPkgBuilder
     /// Kraken compression lives inside the file, not in the outer inode). The produced container is
     /// round-trip-validated in-process with the Kraken decoder before use; if it does not shrink
     /// the image, or validation fails, the raw <see cref="FSFile(PfsBuilder)"/> wrapper is returned
-    /// instead. On-console package acceptance is hardware-gated.
+    /// instead. On-console package acceptance depends on console mode and firmware.
     /// </summary>
     private static FSFile BuildKrakenInnerFile(PfsBuilder innerPfs, Action<string> log, out string? tmpRaw, out string? tmpKraken)
     {
@@ -343,7 +406,7 @@ public static class ProsperoPkgBuilder
         string raw = Path.Combine(Path.GetTempPath(), "psmt_pfs_" + Guid.NewGuid().ToString("N") + ".raw");
         string kraken = Path.Combine(Path.GetTempPath(), "psmt_pfs_" + Guid.NewGuid().ToString("N") + ".kpfs");
 
-        log($"Compressing inner pfs_image.dat ({rawSize:N0} bytes raw) with Oodle Kraken (PFSv3)...");
+        log($"Compressing inner pfs_image.dat ({rawSize:N0} bytes raw) with Kraken (PFSv3)...");
         byte[] rawBytes;
         using (var rawStream = new FileStream(raw, FileMode.Create, FileAccess.ReadWrite, FileShare.None))
         {
@@ -723,7 +786,7 @@ public static class ProsperoPkgBuilder
             pkg.Header.body_offset + pkg.Header.body_size + pkg.Header.pfs_image_size;
     }
 
-    private static void FinishContainer(Pkg pkg, Stream s, ProsperoPkgBuildProperties props, byte[]? nestedImageDigest, Action<string> log)
+    private static ProsperoPfsImageXmlOptions FinishContainer(Pkg pkg, Stream s, ProsperoPkgBuildProperties props, byte[]? nestedImageDigest, Action<string> log)
     {
         // Read the outer PFS image (encrypted blocks + plaintext superblock) so the PS5 mount digests can be
         // computed for the mount image — both are SHA3-256, NOT SHA-256:
@@ -736,7 +799,7 @@ public static class ProsperoPkgBuilder
         s.Position = (long)pkg.Header.pfs_image_offset;
         s.ReadExactly(image);
 
-        var (_, sblockDigest) = ProsperoImageDigests.ComputeSblockDigestFromImage(image);
+        var (sbOffset, sblockDigest) = ProsperoImageDigests.ComputeSblockDigestFromImage(image);
         pkg.Header.pfs_image_digest = sblockDigest ?? ProsperoImageDigests.Sha3_256(image);
         byte[] fihBlock = ProsperoFihBuilder.BuildFihHeaderBlock(
             ProsperoFihVariant.Debug, pkg.Header.pfs_image_size,
@@ -775,6 +838,162 @@ public static class ProsperoPkgBuilder
         s.Position = 0x1000;
         pkg.HeaderSignature = Crypto.RSA2048EncryptKey(LibProsperoPkg.Util.CryptoKeys.PkgSignKey, headerSha);
         s.Write(pkg.HeaderSignature, 0, 256);
+
+        // Every digest, the geometry and the entry table are now finalized on this CNT, so the reproducible
+        // SI pfsimage.xml options can be assembled from the builder's own output. The inner-PFS seed is read
+        // from the plaintext outer superblock at sbOffset+0x370.
+        return BuildSiXmlOptions(pkg, image, sbOffset, Path.GetFullPath(props.SourceFolder!));
+    }
+
+    // ---- SI (sce_suppl) pfsimage.xml option assembly ----------------------------------------------
+
+    /// <summary>
+    /// Builds the reproducible <see cref="ProsperoPfsImageXmlOptions"/> for the trailing debug SI segment
+    /// from the finalized CNT (<paramref name="pkg"/>) and outer image (<paramref name="image"/>). Every
+    /// value maps to something the builder already produced — the general digests, the header/body/
+    /// fixed-info digests, the container geometry and the CNT entry table — so the emitted pfsimage.xml is
+    /// self-consistent with the produced package.
+    /// </summary>
+    private static ProsperoPfsImageXmlOptions BuildSiXmlOptions(Pkg pkg, byte[] image, int sbOffsetInImage, string sourceFolder)
+    {
+        // Inner-PFS superblock seed: 16 bytes at superblock+0x370 (zeros in our build — self-consistent).
+        byte[] seed = new byte[16];
+        if (sbOffsetInImage >= 0 && sbOffsetInImage + PfsSeedOffset + seed.Length <= image.Length)
+            Array.Copy(image, sbOffsetInImage + PfsSeedOffset, seed, 0, seed.Length);
+
+        ParamJsonInfo pj = ReadParamJsonInfo(sourceFolder);
+
+        long pfsImageSize = (long)pkg.Header.pfs_image_size;
+        long containerSize = (long)pkg.Header.pfs_image_offset;   // CNT-internal value = CNT body end = CNT size.
+        long bodyOffset = (long)pkg.Header.body_offset;
+        long mandatorySize = (long)pkg.Metas.Metas.First(m => (uint)m.id == ImagedigsEntryId).DataOffset;
+        // Mount-image size = FIH (0x10000) + shared PFS image + container. pkg.Header.mount_image_size omits
+        // the leading FIH block, so it is reconstructed here.
+        long packageSize = (long)ProsperoImageDigests.FihRelativeImageOffset + pfsImageSize + containerSize;
+
+        // The <entries> table = the file-class CNT entries (id >= 0x400), ordered by container offset.
+        var entries = pkg.Metas.Metas
+            .Where(m => (uint)m.id >= 0x400)
+            .Select(m => new ProsperoPfsImageEntry(EntryDisplayName(pkg, m.id), (long)m.DataOffset, m.DataSize))
+            .OrderBy(e => e.Offset)
+            .ToList();
+
+        byte[]? Dig(GeneralDigest d) => pkg.GeneralDigests.Digests.TryGetValue(d, out byte[]? v) ? v : null;
+
+        return new ProsperoPfsImageXmlOptions
+        {
+            ContentId = pkg.Header.content_id,
+            TitleName = pj.TitleName,
+            ContentVersion = pj.ContentVersion,
+            DrmType = "none",
+            ApplicationDrmType = pj.ApplicationDrmType,
+            ContentType = ContentTypeString(pkg.Header.content_type),
+            ApplicationType = "free",
+            MasterVersion = pj.MasterVersion,
+            RequiredSystemSoftwareVersion = pj.RequiredSystemSoftwareVersion,
+            SdkVersion = pj.SdkVersion,
+            PackageSize = packageSize,
+            PfsImageOffset = (long)ProsperoImageDigests.FihRelativeImageOffset,
+            PfsImageSize = pfsImageSize,
+            PfsImageSeed = seed,
+            ContainerSize = containerSize,
+            MandatorySize = mandatorySize,
+            BodyOffset = bodyOffset,
+            SupplementalOffset = containerSize,
+            Entries = entries,
+            ContentDigest = Dig(GeneralDigest.ContentDigest),
+            GameDigest = pkg.Header.pfs_image_digest,
+            HeaderDigest = Dig(GeneralDigest.HeaderDigest),
+            SystemDigest = Dig(GeneralDigest.SystemDigest),
+            ParamDigest = Dig(GeneralDigest.ParamDigest),
+            PackageDigest = pkg.HeaderDigest,
+            BodyDigest = pkg.Header.body_digest,
+            SblockDigest = pkg.Header.pfs_image_digest,
+            FixedInfoDigest = pkg.Header.pfs_signed_digest,
+        };
+    }
+
+    /// <summary>Plaintext superblock offset of the 16-byte inner-PFS seed (superblock+0x370).</summary>
+    private const int PfsSeedOffset = 0x370;
+
+    // pfsimage.xml content-type string, selected from the CNT header content-type code.
+    private static string ContentTypeString(uint contentType) => contentType switch
+    {
+        ContentTypeAc => "PS5AC",
+        ContentTypeAl => "PS5AL",
+        _ => "PS5GD",
+    };
+
+    // Display name for one <entry> of the pfsimage.xml <entries> table. imagedigs (0x040A) is stored
+    // UNNAMED in the CNT, so it is special-cased; every other file-class entry carries its CNT name (or a
+    // canonical id->name fallback).
+    private static string EntryDisplayName(Pkg pkg, EntryId id)
+    {
+        if ((uint)id == ImagedigsEntryId) return "imagedigs.dat";
+        var e = pkg.Entries.FirstOrDefault(x => x.Id == id);
+        if (e?.Name is { Length: > 0 } named) return named;
+        return EntryNames.IdToName.TryGetValue(id, out string? nm) ? nm : $"0x{(uint)id:x4}.bin";
+    }
+
+    // Reproducible pfsimage.xml string fields sourced from param.json.
+    private readonly record struct ParamJsonInfo(
+        string ContentVersion, string MasterVersion, string SdkVersion,
+        string RequiredSystemSoftwareVersion, string ApplicationDrmType, string TitleName);
+
+    // Best-effort param.json reader for the pfsimage.xml string fields. Any parse failure falls back to
+    // the neutral defaults (the produced XML stays structurally valid and self-consistent).
+    private static ParamJsonInfo ReadParamJsonInfo(string sourceFolder)
+    {
+        string contentVersion = "01.000.000", masterVersion = "01.00",
+               sdkVersion = "0x0000000000000000", reqSys = "0x0000000000000000",
+               appDrm = "free", title = "";
+        try
+        {
+            byte[] pj = ReadParamJson(sourceFolder);
+            if (pj is { Length: > 0 })
+            {
+                using var doc = JsonDocument.Parse(pj);
+                JsonElement root = doc.RootElement;
+                if (root.ValueKind == JsonValueKind.Object)
+                {
+                    static string? Str(JsonElement o, string name) =>
+                        o.TryGetProperty(name, out JsonElement v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+                    contentVersion = Str(root, "contentVersion") ?? contentVersion;
+                    masterVersion = Str(root, "masterVersion") ?? masterVersion;
+                    sdkVersion = Str(root, "sdkVersion") ?? sdkVersion;
+                    reqSys = Str(root, "requiredSystemSoftwareVersion") ?? reqSys;
+                    appDrm = Str(root, "applicationDrmType") ?? appDrm;
+
+                    if (root.TryGetProperty("localizedParameters", out JsonElement lp) && lp.ValueKind == JsonValueKind.Object)
+                    {
+                        string lang = Str(lp, "defaultLanguage") ?? "en-US";
+                        if (lp.TryGetProperty(lang, out JsonElement le) && le.ValueKind == JsonValueKind.Object &&
+                            Str(le, "titleName") is { Length: > 0 } tn)
+                        {
+                            title = tn;
+                        }
+                        else
+                        {
+                            foreach (JsonProperty prop in lp.EnumerateObject())
+                            {
+                                if (prop.Value.ValueKind == JsonValueKind.Object &&
+                                    Str(prop.Value, "titleName") is { Length: > 0 } t2)
+                                {
+                                    title = t2;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or ArgumentException)
+        {
+            // Best-effort: keep the neutral defaults.
+        }
+        return new ParamJsonInfo(contentVersion, masterVersion, sdkVersion, reqSys, appDrm, title);
     }
 
     // Per-entry CNT ids that contribute to the system-digest (the sce_sys visual/audio media + their *.dds

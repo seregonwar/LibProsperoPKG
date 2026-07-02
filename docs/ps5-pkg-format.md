@@ -96,7 +96,7 @@ creation:
 | `0x2000` | `param.json` |
 | `0x2010` / `0x2011` | `playgo-hash-table.dat` / `playgo-ficm.dat` |
 
-> A `--oformat nwonly` debug CNT carries 13 entries:
+> A `nwonly` debug CNT carries 13 entries:
 > `0x0001 0x0010 0x0020 0x0080 0x0100 0x0200 0x040A 0x1001 0x1200 0x1280 0x2000 0x2010 0x2011`
 > (no license entries). `imagedigs.dat` (`0x040A`) is the only **unnamed** body entry. The
 > license, network-platform, self-info, delta-info, keymap_rp, changeinfo and pronunciation entries
@@ -212,27 +212,40 @@ member order against reference debug packages (every member uncompressed / `STOR
 
 | Path | Notes |
 |---|---|
-| `common/etc/naps_meta_18.dat` | per-package metric blob; size varies (e.g. 3440 / 7936 B) |
-| `common/etc/naps_meta_300.dat` | 48 B |
+| `common/etc/naps_meta_18.dat` | per-package **keyed** metric blob; size varies (e.g. 3440 / 7936 B). No off-console producer — supplied verbatim when available, otherwise **omitted** (never fabricated). |
+| `common/etc/naps_meta_300.dat` | 48 B; reproduced byte-exact (`R = alignUp(pfs_image.dat) - 0x10000` at 0x10/0x20, kind id `0x3E9` at 0x18, block size `0x10000` at 0x28) |
 | `common/etc/naps_meta_301.dat` | 48 B, byte-identical to `_300` |
 | `common/etc/naps_meta_302.dat` | 48 B, byte-identical to `_300` |
 | `common/etc/naps_meta_308.dat` | 48 B, byte-identical to `_300` |
 | `common/etc/pfsimage.xml` | machine-readable image descriptor (see below) |
-| `common/etc/playgo-chunk.dat` | 416 B; identical to the `sce_sys` copy |
+| `common/etc/playgo-chunk.dat` | 416 B; identical to the CNT `0x1001` copy |
 | `config/<content-id>/playgo-chunk.crc` | CRC-32C per 64 KiB block of the mount image |
 
-`LibProsperoPkg.PKG.ProsperoSiArchive` builds this archive (`BuildMembers` → `WriteZip`); the
-order, paths, `STORED` framing and `naps_meta_30x` identity are reproduced exactly. The
-`playgo-chunk.crc` is recomputed from the finalized mount image.
+The SI segment is **emitted automatically** by the `nwonly` build: `ProsperoPkgBuilder` captures the
+reproducible `pfsimage.xml` options, the CNT `playgo-chunk.dat`, and the block-aligned inner-image size
+during the CNT build, and `ProsperoFihBuilder.BuildFromCnt` appends the ZIP produced by
+`ProsperoSiArchive.BuildDebugSiSegment` after the embedded CNT. `BuildMembers` → `WriteZip` reproduce the
+member order, paths, `STORED` framing and `naps_meta_30x` identity exactly; the `playgo-chunk.crc` is
+recomputed from the finalized mount image (CRC-32C). The `naps_meta_300` `R` is the inner-image
+data-region size and is legitimately `0` when the inner image fits in one 0x10000 block (tiny synthetic
+inputs); real multi-MB game/app content yields the expected non-zero value (e.g. `0x40000` for the
+reference Downloads package).
 
 `pfsimage.xml` is reproduced faithfully through its `<config>`, `<digests>`, `<params>`,
 `<container>`, `<mount-image>` and `<entries>` sections — including the toolchain constants
 `<version-date>0x20200722</version-date>` / `<version-hash>0x01fe52e9</version-hash>`, the derived
-`<longname>`, the full container/mount geometry and the CNT entry table. The keyed `*-digest`
-fields are console-finalization products and are emitted as zero placeholders (each reported as a
-warning), and the deep `<chunkinfo>`/`<pfs-image>`/`<nested-image>` introspection trees (which
-require the full inner-PFS inode walk) are not implemented. The `naps_meta_*` blobs are supplied
-verbatim — never fabricated. See [implementation-status.md](implementation-status.md).
+`<longname>`, the full container/mount geometry and the CNT entry table, all populated with the build's
+own self-consistent digests. The deep `<chunkinfo>`/`<pfs-image>` (outer PFS) / `<nested-image>` (inner
+PFS) introspection trees are now emitted as well, walked from the build's own captured outer/inner inode
+layout (`PFSBuilder.CaptureImageTree`). They are self-consistent snapshots of this library's image, not
+byte matches of a specific reference: the outer superblock `<icv>` is the real captured superblock HMAC
+and the `<seed>` is all-zero, but because this library writes a superblock-first outer PFS while
+the reference layout is data-first the reported block indices and metadata offsets differ, and the nested
+`<metadata>` pseudo-element and per-file `poffset` are intentionally omitted. Inner `sce_sys` files packed
+as outer CNT entries (e.g. `icon0.png`) receive no inner inode and are correctly absent from the
+`<nested-image>` tree. These trees are informational metadata that the console loader does not read.
+The keyed `naps_meta_18.dat` blob is never fabricated. See
+[implementation-status.md](implementation-status.md).
 
 ---
 
@@ -288,16 +301,16 @@ stream. CNT-entry placement for each file is described below.
 
 | File | Location | Description |
 |---|---|---|
-| `imagedigs.dat` | CNT entry `0x040A` (unnamed) | `N × 32` byte digest table, one entry per 64 KiB **outer** image block (e.g. 11 blocks = 352 B). **Now computed end-to-end:** the outer-PFS builder captures the per-block descriptor digests of the finalized outer image (`CaptureImageDigests`), and the builder patches them into the entry after `WriteImage`. Each stored 32-byte digest is written in reverse byte order. Because it digests the outer image but does **not** live in it, there is no self-reference / fixpoint — the build is single-pass and the entry size (`outerBlocks × 32`) is known up front. Self-consistent with this encoder's actual block content (byte-identity to a specific reference package is still gated on Kraken byte-identity). |
+| `imagedigs.dat` | CNT entry `0x040A` (unnamed) | `N × 32` byte digest table, one entry per 64 KiB **outer** image block (e.g. 11 blocks = 352 B). **Now computed end-to-end:** the outer-PFS builder captures the per-block descriptor digests of the finalized outer image (`CaptureImageDigests`), and the builder patches them into the entry after `WriteImage`. Each stored 32-byte digest is written in byte-reversed order. Because it digests the outer image but does **not** live in it, there is no self-reference / fixpoint — the build is single-pass and the entry size (`outerBlocks × 32`) is known up front. Self-consistent with this encoder's actual block content (byte-identity to a specific reference package still requires byte-identical Kraken). |
 | `playgo-chunk.dat` | CNT entry `0x1001` **and** `sce_suppl/common/etc` (SI) | 416-byte PlayGo chunk descriptor. The two copies are **byte-identical**. Generated by `PlayGo.ProsperoPlayGo.BuildChunkDat`. |
 | `playgo-hash-table.dat` | CNT entry `0x2010` | PlayGo file hash table; `0x38 + n × 8` bytes (n = `ficmCount / 2`). A content-independent constant structure (version=1, `\x7FFLT` magic at `0x18`, fixed 16-byte prefix + `n × 8` constant table entries). `PlayGo.ProsperoPlayGo.BuildHashTable`. |
 | `playgo-ficm.dat` | CNT entry `0x2011` | PlayGo file-in-chunk map; 16-byte header + `fileCount` bytes. `PlayGo.ProsperoPlayGo.BuildFicm`. |
 | `playgo-chunk.crc` | `config/<content-id>/` (SI) | CRC-32C over each 64 KiB block of the finalized mount image. `ProsperoPlayGo.BuildChunkCrc`. |
 | `naps_meta_18.dat` | `sce_suppl/common/etc` (SI) | Per-package NAPS metric blob; size varies per package (e.g. 3440 / 7936 B). Supplied verbatim. |
 | `naps_meta_300/301/302/308.dat` | `sce_suppl/common/etc` (SI) | 48-byte NAPS records; `301/302/308` are byte-identical to `300`. Reproduced byte-exact (`ProsperoNapsMeta`). |
-| `pfsimage.xml` | `sce_suppl/common/etc` (SI) | Machine-readable image descriptor; reproduced through `<entries>` (see §5.4). |
+| `pfsimage.xml` | `sce_suppl/common/etc` (SI) | Machine-readable image descriptor; reproduced through `<entries>` plus the `<chunkinfo>`/`<pfs-image>`/`<nested-image>` introspection trees (self-consistent; see §5.4). |
 
-> **`naps_pkg_layout.dat` is NOT present in `--oformat nwonly` debug packages.** LibProsperoPkg includes a round-trip serializer/parser (`ProsperoNapsLayout`) for completeness but never fabricates the file.
+> **`naps_pkg_layout.dat` is NOT present in `nwonly` debug packages.** LibProsperoPkg includes a round-trip serializer/parser (`ProsperoNapsLayout`) for completeness but never fabricates the file.
 
 ### 8.1 Supplied system files
 
@@ -316,7 +329,7 @@ are produced by a signing backend and are stored verbatim — the library does n
 `keymap_rp` uses two path shapes, flat `keymap_rp/0NN.png` and nested `keymap_rp/NN/0NN.png`; each
 image is its own CNT entry. The key-map set is capped at 1 MiB total.
 
-Because the standard `--oformat nwonly` debug package supplies none of these files, its CNT stays at
+Because the standard `nwonly` debug package supplies none of these files, its CNT stays at
 13 entries. Each supplied system file adds one entry.
 
 ### 8.2 UCP archives (`trophy2/*.ucp`, `uds/*.ucp`)

@@ -36,7 +36,7 @@
 // CNT-header rollup digest = SHA3-256( CNT[off : off+size] ) stored at CNT+0x100
 // where off = BE64 @ (CNT+0x20) and size = BE32 @ (CNT+0x1c) (= 0x2000 / 0x18A0 on every sample),
 // i.e. SHA3-256 of the CNT digest/entry-table region. This is what the CNT sub-region verifier
-// (reference routine) recomputes and checks. Validated byte-exact 4/4. See
+// recomputes and checks. Validated byte-exact 4/4. See
 // ComputeCntHeaderRollupDigest.
 //
 // content-digest = SHA3-256( CNT[0x40:0x78] ‖ game-digest(32) ‖ major-param-digest(32, all-zero) )

@@ -13,8 +13,8 @@
 // length-limited Huffman, transmission-format choice and optimal LZ parse. This encoder provides
 // the decoder-validated foundation for that through an in-process round-trip against the decoder.
 //
-// Reference: the bit layout is defined entirely by KrakenDecoder (ooz/GPLv3-derived). LibProsperoPkg
-// is GPLv3; GPLv3 §13 permits the combination. No external Kraken encoder specification is used.
+// The bit layout is defined entirely by KrakenDecoder (a GPLv3-licensed translation; see NOTICE).
+// LibProsperoPkg is GPLv3; GPLv3 §13 permits the combination. No external Kraken encoder specification is used.
 // ---------------------------------------------------------------------------------------------------
 #nullable enable
 using System;
@@ -49,7 +49,7 @@ internal static class KrakenHuffmanArrayEncoder
         if (distinct == 1)
         {
             // A single-symbol *top-level* array is rejected by the real decoder: Type12 returns a
-            // negative consumed length for numSyms==1 (ooz kraken.cpp line 1218 "src - src_end"),
+            // negative consumed length for numSyms==1 (the reference decoder computes "src - src_end"),
             // which the DecodeBytes caller's "src_used != src_size" check treats as failure. Single
             // symbol RLE only exists nested inside MultiArray/recursive contexts. Synthesize a
             // phantom second symbol (freq 1, never present in the body) and use the validated
@@ -322,7 +322,7 @@ internal static class KrakenHuffmanArrayEncoder
         var sym = new int[n + 1];
         var cnt = new int[n + 1];
         for (int i = 0; i < n; i++) { sym[i] = present[i]; cnt[i] = (int)weight[present[i]]; }
-        if (n <= 32) SortByCountSony(sym, cnt, n);
+        if (n <= 32) SortByCountSmall(sym, cnt, n);
         else StableSortByCount(sym, cnt, n);
 
         // (3) Unlimited Moffat lengths; if the max is already within the limit, use them directly.
@@ -447,7 +447,7 @@ internal static class KrakenHuffmanArrayEncoder
     // ascending by cnt. The depth budget matches the reference pre-grown sort stack: repeatedly decay
     // the count by ~0.75 (x>>1)+(x>>2) until 0 -> k frames; when the pending-frame depth reaches k,
     // heapsort the current range instead of partitioning.
-    private static void SortByCountSony(int[] sym, int[] cnt, int n)
+    private static void SortByCountSmall(int[] sym, int[] cnt, int n)
     {
         if (n < 2) return;
 
@@ -606,7 +606,7 @@ internal static class KrakenHuffmanArrayEncoder
     }
 
     // ============================ bit writers ============================
-    // MSB-first writer mirroring OozBR.Forward (first bit written -> bit 7 of byte 0).
+    // MSB-first writer mirroring the reference bit reader's forward mode (first bit written -> bit 7 of byte 0).
     private sealed class MsbBitWriter
     {
         private readonly List<byte> _bytes = new();

@@ -70,6 +70,21 @@ public class PfsBuilder
     /// </summary>
     public byte[] ImageDigests;
 
+    /// <summary>
+    /// When set before <see cref="WriteImage(Stream)"/>, captures this image's superblock integrity
+    /// value into <see cref="SuperblockIcv"/>: the 32-byte HMAC-SHA256 self-signature of the
+    /// superblock (final signature block 0 @ offset 0x380), computed from this image's own signing
+    /// key during signing (before XTS encryption). Used for the supplemental <c>pfsimage.xml</c>
+    /// <c>&lt;icv&gt;</c> element. Populated only for a signed image.
+    /// </summary>
+    public bool CaptureSuperblockIcv;
+
+    /// <summary>
+    /// The captured 32-byte superblock ICV (see <see cref="CaptureSuperblockIcv"/>), or <c>null</c>
+    /// until a signed image is written with that flag set.
+    /// </summary>
+    public byte[] SuperblockIcv;
+
     Action<string> logger;
     private void Log(string s) => logger?.Invoke(s);
 
@@ -92,6 +107,93 @@ public class PfsBuilder
     public long CalculatePfsSize()
     {
         return hdr.Ndblock * hdr.BlockSize;
+    }
+
+    /// <summary>
+    /// Captures a self-consistent snapshot of this image's inode tree and geometry AFTER
+    /// <see cref="WriteImage(Stream)"/> has assigned every inode's block layout (and, for a signed
+    /// image with <see cref="CaptureSuperblockIcv"/> set, computed the superblock ICV). The snapshot
+    /// drives the supplemental <c>pfsimage.xml</c> sections (<c>&lt;pfs-image&gt;</c> /
+    /// <c>&lt;nested-image&gt;</c>), which describe the exact bytes this builder produced.
+    /// </summary>
+    /// <returns>A snapshot of the built image's super-root tree and superblock geometry.</returns>
+    public ProsperoPfsImageTreeInfo CaptureImageTree()
+    {
+        var root = ImageNodeFromInode(super_root_ino, name: "", isDir: true, isInternal: false);
+
+        // The PFS super-root holds the flat path table (+ optional collision resolver) and the user
+        // root ("uroot"). These internal pseudo files are not part of the user tree, so synthesize
+        // them from their dedicated inodes to mirror the reference super-root layout.
+        root.Children.Add(ImageNodeFromInode(fpt_ino, "inode_flat_path_table", isDir: false, isInternal: true));
+        if (cr_ino != null)
+            root.Children.Add(ImageNodeFromInode(cr_ino, "collision_resolver", isDir: false, isInternal: true));
+        root.Children.Add(ImageNodeFromDir(properties.root));
+
+        return new ProsperoPfsImageTreeInfo
+        {
+            BlockSize = (int)hdr.BlockSize,
+            ImageBlocks = hdr.Ndblock,
+            InodeCount = inodes.Count,
+            DinodeBlockCount = (int)hdr.DinodeBlockCount,
+            RootInodeNumber = super_root_ino.Number,
+            DinodeBlock = hdr.InodeBlockSig.StartBlock,
+            DinodeSize = hdr.InodeBlockSig.Size,
+            DinodeFlags = (uint)hdr.InodeBlockSig.Flags,
+            Seed = hdr.Seed,
+            SuperblockIcv = SuperblockIcv,
+            Signed = hdr.Mode.HasFlag(PfsMode.Signed),
+            Encrypted = hdr.Mode.HasFlag(PfsMode.Encrypted),
+            Root = root,
+        };
+    }
+
+    static ProsperoPfsImageNode ImageNodeFromInode(Inode ino, string name, bool isDir, bool isInternal) => new()
+    {
+        Name = name,
+        IsDirectory = isDir,
+        Internal = isInternal,
+        InodeNumber = ino.Number,
+        StoredSize = ino.Size,
+        PlainSize = ino.SizeCompressed == 0 ? ino.Size : ino.SizeCompressed,
+        Flags = (uint)ino.Flags,
+        Mode = (ushort)ino.Mode,
+        Nlink = ino.Nlink,
+        StartBlock = ino.StartBlock,
+        Blocks = ino.Blocks,
+        Compressed = (ino.Flags & InodeFlags.compressed) != 0,
+    };
+
+    static ProsperoPfsImageNode ImageNodeFromDir(FSDir dir)
+    {
+        var node = ImageNodeFromFsNode(dir, isDir: true);
+        foreach (var d in dir.Dirs.OrderBy(d => d.name, StringComparer.Ordinal))
+            node.Children.Add(ImageNodeFromDir(d));
+        // Files whose sce_sys path is a known outer-CNT entry are filtered out of the inner image in
+        // Setup() (they receive no inode and no dirent), yet they linger in the in-memory FSDir.Files
+        // list. Skip any file that never got an inode so the snapshot mirrors the materialized image
+        // rather than the pre-filter tree (otherwise such a node would collide on inode 0).
+        foreach (var f in dir.Files.Where(f => f.ino != null).OrderBy(f => f.name, StringComparer.Ordinal))
+            node.Children.Add(ImageNodeFromFsNode(f, isDir: false));
+        return node;
+    }
+
+    static ProsperoPfsImageNode ImageNodeFromFsNode(FSNode n, bool isDir)
+    {
+        var ino = n.ino;
+        return new ProsperoPfsImageNode
+        {
+            Name = n.name ?? "",
+            IsDirectory = isDir,
+            InodeNumber = ino?.Number ?? 0,
+            StoredSize = ino?.Size ?? n.Size,
+            PlainSize = ino != null ? (ino.SizeCompressed == 0 ? ino.Size : ino.SizeCompressed) : n.CompressedSize,
+            Flags = (uint)(ino?.Flags ?? 0),
+            Mode = (ushort)(ino?.Mode ?? 0),
+            Nlink = ino?.Nlink ?? 0,
+            StartBlock = ino?.StartBlock ?? 0,
+            Blocks = ino?.Blocks ?? 0,
+            Compressed = ino != null && (ino.Flags & InodeFlags.compressed) != 0,
+        };
     }
 
     /// <summary>
@@ -284,8 +386,13 @@ public class PfsBuilder
                 stream.Position = sig.Block * properties.BlockSize;
                 stream.ReadExactly(sig_buffer, 0, sig.Size);
                 stream.Position = sig.SigOffset;
-                stream.Write(Crypto.HmacSha256(signKey, sig_buffer), 0, 32);
+                byte[] mac = Crypto.HmacSha256(signKey, sig_buffer);
+                stream.Write(mac, 0, 32);
                 stream.WriteLE((int)sig.Block);
+                // The superblock self-signature (block 0 @ 0x380) is this image's integrity value,
+                // surfaced for the supplemental pfsimage.xml <icv> element.
+                if (CaptureSuperblockIcv && sig.Block == 0 && sig.SigOffset == 0x380)
+                    SuperblockIcv = mac;
             }
         }
 

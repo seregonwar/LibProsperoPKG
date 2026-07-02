@@ -234,7 +234,7 @@ public class StreamWrapper : Stream
 
     public override void Flush()
     {
-        throw new NotImplementedException();
+        // Read-only stream: nothing to flush.
     }
 
     public override int Read(byte[] buffer, int offset, int count)
@@ -262,12 +262,8 @@ public class StreamWrapper : Stream
     }
 
     public override void SetLength(long value)
-    {
-        throw new NotImplementedException();
-    }
+        => throw new NotSupportedException("StreamWrapper is read-only.");
 
     public override void Write(byte[] buffer, int offset, int count)
-    {
-        throw new NotImplementedException();
-    }
+        => throw new NotSupportedException("StreamWrapper is read-only.");
 }

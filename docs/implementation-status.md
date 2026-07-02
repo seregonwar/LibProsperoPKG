@@ -17,7 +17,7 @@ This document describes the current LibProsperoPkg package-building and reading 
 - Supports AES-XTS encryption over 0x1000-byte sectors using SHA3-256 EKPFS derivation. Tweak and data keys are derived from EKPFS plus the image header seed. The header block remains plaintext, and encrypted images decrypt byte-for-byte.
 - Supports optional PFSC compression for `pfs_image.dat`. Compressed images are smaller when possible, carry the compressed flag, and decompress to a valid inner PFS. Incompressible images fall back to the raw wrapper.
 - Supports zlib PFSC for installable-package inner images.
-- Supports Oodle Kraken PFSC v3 for `nwonly` inner images through `ProsperoInnerCompression.Kraken`. The public facade is `LibProsperoPkg.PFS.Compression.ProsperoCompressedPfsImage` with pack, unpack, format-check, and validation helpers.
+- Supports Kraken PFSC v3 for `nwonly` inner images through `ProsperoInnerCompression.Kraken`. The public facade is `LibProsperoPkg.PFS.Compression.ProsperoCompressedPfsImage` with pack, unpack, format-check, and validation helpers.
 - `ProsperoPkgBuilder` selects the inner codec through `ProsperoInnerCompression` (`None`, `Zlib`, `Kraken`). The older `CompressInnerImage` boolean still maps to `Zlib`. `BuildInnerImage(..., InnerImageForm.KrakenCompressed)` stores `pfs_image.dat` as a self-describing PFSC v3 file inside the outer PFS.
 - Before using a Kraken-compressed inner image, the builder validates an in-process round-trip with `KrakenDecoder`. If compression does not shrink the image or validation fails, it falls back to a raw wrapper.
 - A real loose-source-folder build compressed the Kraken inner image to `0x80000` versus `0x160000` raw, confirming the codec is active in the package build path.
@@ -61,7 +61,7 @@ This document describes the current LibProsperoPkg package-building and reading 
     - `param-digest = SHA3-256(param.json payload)`.
     - `target` as a copy of `game-digest`.
 - Computes FIH `0xB0` nested-image-content digest as `SHA3-256` of the uncompressed inner PFS image at its logical size. The CNT build path threads this preimage through finalization, so the FIH value and CNT `pfs_signed_digest` are mutually consistent. The standalone finalization path without an inner image falls back to an outer-image hash.
-- Computes `imagedigs.dat` (CNT entry `0x040A`, unnamed) as an `N * 32` byte table, one digest per 64 KiB outer-image block. It is stored as an outer-CNT body entry, not as an inner `sce_sys` file. Each stored 32-byte digest is written in reverse byte order. The build patches the captured per-block descriptor digests after `WriteImage`.
+- Computes `imagedigs.dat` (CNT entry `0x040A`, unnamed) as an `N * 32` byte table, one digest per 64 KiB outer-image block. It is stored as an outer-CNT body entry, not as an inner `sce_sys` file. Each stored 32-byte digest is written in byte-reversed order. The build patches the captured per-block descriptor digests after `WriteImage`.
 - All populated digest slots are generated from finished on-disk CNT and image data. A from-scratch build remains internally self-consistent even when its bytes differ from a specific reference package because compressed inner-image bytes can differ.
 
 ### sce\_sys files
@@ -102,10 +102,10 @@ This document describes the current LibProsperoPkg package-building and reading 
 - Implements both 9-byte compressed-block-info record formats and all bit offsets used by the tested 45-record sample.
 - `BuildLayout` defaults to 16-byte alignment, matching the tested sample.
 - Data-dependent NAPS record value generation is only self-consistent for the library's own inner-image compressor output. Byte-identical reproduction of a specific package requires byte-identical Kraken-compressed block sizes.
-- Implements an Oodle Kraken encoder and `KrakenDecoder` under `PFS/Compression/Oodle`, plus `CompressedPfsFileWriter` and `CompressedPfsFile` for the PFSC container.
+- Implements a Kraken encoder and `KrakenDecoder` under `PFS/Compression/Oodle`, plus `CompressedPfsFileWriter` and `CompressedPfsFile` for the PFSC container.
 - `CompressedPfsFileWriter.WriteCompressed(payload)` output is accepted by the reference decompressor and round-trips byte-for-byte for the covered cases: single chunk, multi-block payloads over 256 KiB, the exact 0x40000 boundary, two internal chunks per block with cross-chunk back-references, and stored fallback for incompressible chunks.
 - `CompressedPfsFile.Parse(pfs).Decompress()` reconstructs the original payload byte-for-byte in process for the same cases.
-- The encoder implements Oodle 2.8.0 excess mode for single long matches, including the control byte high bit and forward excess substream. Periodic-tile test classes are byte-identical to the tested reference output, while chunks with multiple over-long matches split them into valid shorter matches.
+- The encoder implements the excess mode for single long matches, including the control byte high bit and forward excess substream. Periodic-tile test classes are byte-identical to the tested reference output, while chunks with multiple over-long matches split them into valid shorter matches.
 - The encoder enforces the newLZ rule that a match may not start in the last 16 bytes of a chunk. It caps match starts at `chunkEnd - 16`, flushes the remainder as trailing literals, and falls back to stored chunks if needed.
 - Huffman entropy arrays are implemented and enabled by default through `KrakenHuffmanArrayEncoder`. Literal, command, and length streams can be Huffman-coded as type-2 single 3-stream arrays with a raw fallback when Huffman is not smaller; the offset array remains raw.
 - `KrakenDecoder` reads raw and Huffman-coded literal/command/offset/length arrays, both code-length encodings, the 3-stream split, excess framing, both literal models, multi-chunk and multi-block payloads, and stored fallback. It decodes the embedded reference vectors and checks SHA3-256 of the decoded payloads.
@@ -116,7 +116,9 @@ This document describes the current LibProsperoPkg package-building and reading 
 - `ProsperoPkgReader` detects both `\x7FCNT` and `\x7FFIH`, resolves embedded CNT data, and reports finalized debug images.
 - `ProsperoPkgWriter`, `ProsperoPkgBuilder`, `ProsperoFihBuilder`, and related builders write the package structures described above.
 - `ProsperoSiArchive` generates the debug install-metadata ZIP container with stored entries, member paths, `playgo-chunk.dat`, structural `pfsimage.xml` fields, and `playgo-chunk.crc`.
+- The SI segment (the trailing `sce_suppl` ZIP) is now emitted automatically by the `nwonly` build. `ProsperoPkgBuilder` captures the reproducible `pfsimage.xml` options, the CNT `playgo-chunk.dat`, and the block-aligned inner-image size during the CNT build; `ProsperoPackageBuilder` then passes them to `ProsperoFihBuilder.BuildFromCnt` through an `siArchiveFactory` that calls `ProsperoSiArchive.BuildDebugSiSegment` on the finalized mount image. The produced segment carries `pfsimage.xml` (with the build's own self-consistent digests, entries and geometry), the four `naps_meta_300/301/302/308.dat` records (`R = alignUp(pfs_image.dat) - 0x10000`, captured at build time), the copied `playgo-chunk.dat`, and a reproducible `config/<content-id>/playgo-chunk.crc` (CRC-32C). The keyed `naps_meta_18.dat` metric blob is omitted (never fabricated).
 - `ProsperoSiArchive.BuildPfsImageXml` reproduces the descriptor structure through `<config>`, `<digests>` framing, `<params>`, `<container>`, `<mount-image>`, and `<entries>`. It includes derived long name, version constants, container geometry, extended mount-image fields, the `pfs-image-seed` block, and CNT entries. Keyed digest rows that are not supplied remain zero placeholders with warnings.
+- `BuildPfsImageXml` also emits the deep introspection trees `<chunkinfo>`, `<pfs-image>` (outer PFS), and `<nested-image>` (inner PFS). `ProsperoPkgBuilder` captures the outer and inner inode layouts and the chunk geometry during the CNT build (`PFSBuilder.CaptureImageTree`) and passes them into the SI options. The walk reflects only inodes actually materialized into each image: inner `sce_sys` files that are packed as outer CNT entries (for example `icon0.png`) receive no inner inode and are correctly excluded from the `<nested-image>` tree.
 - The GP5 project model is parsed and emitted for both root-directory-walked and flat files/folders layouts.
 
 ## Known gaps / not implemented
@@ -126,8 +128,8 @@ This document describes the current LibProsperoPkg package-building and reading 
 - On-console installation acceptance is not guaranteed. Library code verifies structure and round-tripping; acceptance depends on console mode and firmware.
 - The full NAPS streaming outer producer is not complete. Remaining pieces include rolling/weak/strong deduplication, block shuffle, per-outer-block encryption/CRC/digest integration, complete `naps_meta_*.dat` generation, full `pfsimage.xml` named-digest population for all package shapes, and final `\x7FFIH` assembly for enforced streaming use.
 - NAPS layout record values are not fully generated from arbitrary input. The format parser and serializer are implemented, but values derived from exact compression bookkeeping are only self-consistent for this library's own compressor output.
-- `naps_meta_*.dat` metric blobs are accepted as inputs and emitted verbatim in the debug metadata archive; the library does not fabricate their final values.
-- Deep `pfsimage.xml` `<chunkinfo>`, `<pfs-image>`, and `<nested-image>` introspection trees are not implemented because they require a full inner-PFS inode walk.
+- `naps_meta_300/301/302/308.dat` (the 48-byte records) are reproduced byte-exact by `ProsperoNapsMeta` from the build's own inner-image size and emitted in the SI segment automatically. The keyed `naps_meta_18.dat` metric blob has no off-console producer: it is accepted as an input and emitted verbatim when supplied, otherwise omitted — never fabricated.
+- The `pfsimage.xml` `<chunkinfo>`, `<pfs-image>`, and `<nested-image>` introspection trees are emitted from the build's own captured outer/inner-PFS inode layout, so they are self-consistent snapshots of this library's image rather than byte matches of a specific reference package. The outer superblock `<icv>` is the real captured superblock HMAC and the `<seed>` is all-zero; because this library writes a superblock-first outer PFS while the reference layout is data-first, the reported block indices and metadata offsets differ from a specific reference package. The nested `<metadata>` pseudo-element and per-file `poffset` are intentionally omitted (not stably derivable for compressed inner content). These sections live in the supplemental `sce_suppl` ZIP that the console loader does not read, so they do not affect installability.
 - Keyed or console-produced `pfsimage.xml` digest members in the install-metadata archive are supplied by the caller or left as placeholders; they are not fabricated.
 - Byte-identical reproduction of a specific `nwonly` package remains limited by exact Kraken encoder choices at compression level 7. The generated package is valid and internally consistent, but downstream NAPS layout values and digests that depend on exact compressed bytes can differ.
 - Automatic emission of `naps_pkg_layout.dat` for package builds is not complete; the implemented component is the parser and serializer. Existing package-level status data says this file was absent from all real `nwonly` samples used for emission checks, so the builder does not claim package-emission coverage.
@@ -162,7 +164,7 @@ This document describes the current LibProsperoPkg package-building and reading 
 | `npbind.dat` / `nptitle.dat` structural validation | Implemented; validated and identifiers extracted, packed verbatim |
 | `playgo-chunk.crc` | Implemented, byte-exact for tested debug samples |
 | Debug install-metadata ZIP container | Implemented; caller supplies remaining console-produced members |
-| `pfsimage.xml` structural descriptor | Implemented; deep introspection and supplied digest rows remain incomplete |
+| `pfsimage.xml` structural descriptor | Implemented, including `<chunkinfo>`/`<pfs-image>`/`<nested-image>` trees; self-consistent (not byte-identical to a specific reference), supplied keyed digest rows remain placeholders |
 | Keystone (`sce_sys/keystone`) | Implemented, byte-exact from passcode for version 2 and version 3 |
 | DDS BC7 texture generation | Implemented |
 | GP5 project model | Implemented |
@@ -170,6 +172,6 @@ This document describes the current LibProsperoPkg package-building and reading 
 | NAPS streaming outer producer | Not implemented |
 | Retail install-metadata archive | Not implemented |
 | Retail finalized image (`0x80`) | Not implemented |
-| On-console acceptance guarantee | Not implemented; console-gated |
+| On-console acceptance guarantee | Not implemented; depends on console mode and firmware |
 
 

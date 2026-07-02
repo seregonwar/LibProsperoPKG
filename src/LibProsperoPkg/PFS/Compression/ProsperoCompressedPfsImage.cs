@@ -6,7 +6,7 @@
 // in LibProsperoPkg.PFS.ProsperoPfsc: same 'PFSC' magic, but format version 3, a
 // 7-section directory, SHA3-256 digests and Kraken (level 7, window 18) per-block compression
 // — NOT zlib. The two are kept as separate code paths because the installable debug .pkg inner
-// image uses the zlib PFSC, while the "--oformat nwonly" inner image uses this Kraken PFSv3
+// image uses the zlib PFSC, while the "nwonly" inner image uses this Kraken PFSv3
 // container (see ProsperoPkgBuildProperties.InnerCompression).
 //
 // Compression and decompression use the codec in PFS/Compression: CompressedPfsFileWriter
@@ -48,16 +48,16 @@ public sealed class ProsperoCompressedPfsImageResult
 }
 
 /// <summary>
-/// Packer/unpacker for the PS5 PFSv3 compression container ("PFSC", Kraken). This is the codec used for the "--oformat nwonly" inner image
+/// Packer/unpacker for the PS5 PFSv3 compression container ("PFSC", Kraken). This is the codec used for the "nwonly" inner image
 /// (<c>pfs_image.dat</c>); for the installable zlib PFSC image use
 /// <see cref="LibProsperoPkg.PFS.ProsperoPfsc"/>.
 /// </summary>
 public static class ProsperoCompressedPfsImage
 {
-    /// <summary>The default PS5 v3 logical block size (256 KiB), matching "--oformat nwonly".</summary>
+    /// <summary>The default PS5 v3 logical block size (256 KiB), matching "nwonly".</summary>
     public const int DefaultBlockSize = CompressedPfsFileWriter.DefaultBlockSize;
 
-    /// <summary>The default Kraken level recorded in the header (7, matching "--oformat nwonly").</summary>
+    /// <summary>The default Kraken level recorded in the header (7, matching "nwonly").</summary>
     public const int DefaultLevel = 7;
 
     private const uint PfscMagic = 0x43534650; // 'P','F','S','C'

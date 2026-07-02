@@ -4,15 +4,14 @@
 // ---------------------------------------------------------------------------------------------------
 // Kraken (newLZ) bit reader.
 //
-// Derived from the Kraken *decompression* reference implementation in the project "ooz"
-// (https://github.com/powzix/ooz), file kraken.cpp, which is licensed under the GNU GPL v3.
-// LibProsperoPkg as a whole is licensed under the GNU GPLv3; section 13 of the GPLv3 expressly
-// permits conveying a work that links/combines GPLv3-covered code. The bit-level layout implemented
-// here is the public Kraken format; this file carries the original ooz/GPL attribution.
+// Portions of the bit-level layout are an index-based translation of a GPLv3-licensed third-party
+// decompressor; see NOTICE for the attribution. LibProsperoPkg as a whole is licensed under the
+// GNU GPLv3; section 13 of the GPLv3 expressly permits conveying a work that links/combines
+// GPLv3-covered code. The bit-level layout implemented here is the public Kraken format.
 //
 // This reader is the precise inverse of the encoder's bit writer (KrakenBitWriter): MSB-first, with a
 // 24-bit refill window, and two independent readers (one forward from the start of the bit region, one
-// backward from its end) that must meet at the same byte. It is index-based (no pointers,).
+// backward from its end) that must meet at the same byte. It is index-based (no pointers).
 // ---------------------------------------------------------------------------------------------------
 #nullable enable
 using System;
@@ -21,7 +20,7 @@ using System.Numerics;
 namespace LibProsperoPkg.PFS.Compression.Oodle;
 
 /// <summary>
-/// A single Oodle Kraken bit reader over a byte region. Operates either forward (from the region
+/// A single Kraken bit reader over a byte region. Operates either forward (from the region
 /// start) or backward (from the region end), mirroring the dual readers Kraken uses to code offsets
 /// and lengths. MSB-first with a 24-bit refill window.
 /// </summary>

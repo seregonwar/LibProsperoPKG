@@ -17,7 +17,7 @@
 //
 // Decoder + byte-exact serializer for the NAPS streaming layout (`naps_pkg_layout.dat`) of a PS5
 // finalized image. The on-disk `PackageLayout_NAPS` structure is what reference output uses for the
-// streaming output formats (`--oformat nwonly` / `bd+nw`).
+// streaming output formats (`nwonly` / `bd+nw`).
 //
 // Format boundary - the on-disk format is fully modeled. `Parse` decodes and
 // `BuildLayout` re-serializes; `BuildLayout(Parse(reference)) == reference` for all 544 bytes of the reference
@@ -40,7 +40,7 @@
 // * fidx (type + 40-bit m_uoffsetStart) and u2c (uint24 m_infoOffset9BBase + 7 deltas =>
 // start_cblockinfo_index per ublock) map files and uncompressed blocks into that stream.
 // Producing these values byte-identically to the reference requires the reference NAPS packager and its
-// exact Oodle 2.8.0 encoder (compressed sizes are encoder-defined) - the same encoder constraint documented
+// exact Kraken encoder (compressed sizes are encoder-defined) - the same encoder constraint documented
 // for the Kraken codec - and cannot be byte-matched off-console for independently generated (valid but byte-different)
 // compression. The deliverables here are the Validated format + serializer, plus the confirmed
 // value semantics above.

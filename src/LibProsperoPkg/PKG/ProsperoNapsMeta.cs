@@ -1,11 +1,10 @@
 // LibProsperoPkg - A library for building and inspecting PS5 packages.
 // Copyright (C) 2026 SvenGDK
 //
-// Producer for the NAPS metadata records (`common/etc/naps_meta_*.dat`) that reference tool
-// streams into the SI (install-metadata) segment of a finalized image for the streaming output
-// formats (`--oformat nwonly`). The NAPS record dispatcher
-// (reference routine, "%s%s%s%s%s%snaps_meta_%d.dat" at the reference string location) routes each record id to a stored
-// member; the content this type produces was decoded byte-for-byte from the reference debug packages.
+// Producer for the NAPS metadata records (`common/etc/naps_meta_*.dat`) that are
+// streamed into the SI (install-metadata) segment of a finalized image for the streaming output
+// formats (`nwonly`). The NAPS record dispatcher routes each record id to a stored
+// member by the `naps_meta_%d.dat` naming; the record layout matches the reference debug packages byte-for-byte.
 //
 // records and external inputs:
 // * naps_meta_300/301/302/308.dat -> reproduced byte-exact. All four ids carry the same 48-byte
@@ -38,7 +37,7 @@ namespace LibProsperoPkg.PKG;
 
 /// <summary>
 /// Byte-exact producer for the PS5 <c>naps_meta_*.dat</c> records emitted into the SI
-/// segment of a <c>--oformat nwonly</c> finalized image. The 48-byte <c>naps_meta_300/301/302/308</c>
+/// segment of a <c>nwonly</c> finalized image. The 48-byte <c>naps_meta_300/301/302/308</c>
 /// descriptor is reproduced exactly from the inner-image geometry; <c>naps_meta_18.dat</c> is a keyed
 /// blob and is accepted as an external input (see the file header). See <see cref="ProsperoSiArchive"/>.
 /// </summary>

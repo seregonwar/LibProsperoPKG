@@ -1,0 +1,103 @@
+name: Native library (Linux)
+
+# Builds the LibProsperoPkg shared library (.so) with NativeAOT for linux-x64 and
+# linux-arm64. The AOT and shared-library settings are injected into the project at build
+# time; the committed project is never modified. Each architecture builds on a native
+# runner, so no cross-compilation toolchain is required.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    paths:
+      - 'LibProsperoPKG/src/**'
+      - '.github/native/**'
+      - '.github/workflows/native-linux.yml'
+  pull_request:
+    paths:
+      - 'LibProsperoPKG/src/**'
+      - '.github/native/**'
+      - '.github/workflows/native-linux.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: linux-x64
+            runner: ubuntu-latest
+          - rid: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    env:
+      PROJECT: LibProsperoPKG/src/LibProsperoPkg/LibProsperoPkg.csproj
+      PROJECT_DIR: LibProsperoPKG/src/LibProsperoPkg
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Install NativeAOT prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang zlib1g-dev
+
+      - name: Inject AOT settings and export surface
+        shell: pwsh
+        run: |
+          $csproj = $env:PROJECT
+          $text = Get-Content -Raw $csproj
+          if ($text -notmatch '<PublishAot>') {
+            $inject = "    <PublishAot>true</PublishAot>`n    <NativeLib>Shared</NativeLib>`n  </PropertyGroup>"
+            $idx = $text.IndexOf('</PropertyGroup>')
+            $text = $text.Substring(0, $idx) + $inject + $text.Substring($idx + '</PropertyGroup>'.Length)
+            Set-Content -NoNewline -Path $csproj -Value $text
+          }
+          Copy-Item '.github/native/NativeExports.cs' (Join-Path $env:PROJECT_DIR 'NativeExports.cs') -Force
+          if (-not (Select-String -Path $csproj -Pattern '<PublishAot>true</PublishAot>' -Quiet)) {
+            Write-Error 'csproj patch did not apply'
+            exit 1
+          }
+
+      - name: Publish shared library
+        run: dotnet publish "$PROJECT" -c Release -r ${{ matrix.rid }} --nologo
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $pub = Join-Path $env:PROJECT_DIR "bin/Release/net10.0/${{ matrix.rid }}/publish"
+          $libs = Get-ChildItem -Path $pub -Recurse -Include *.so
+          if (-not $libs) {
+            Write-Error "No shared library (.so) was produced in $pub"
+            exit 1
+          }
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          $libs | Copy-Item -Destination artifacts
+          Copy-Item '.github/native/libprosperopkg.h' artifacts
+
+      - name: Verify exported symbols
+        run: |
+          lib=$(ls artifacts/*.so | head -n 1)
+          echo "Inspecting $lib"
+          nm -D --defined-only "$lib" | grep -E 'lpp_(version|build_package|compose_content_id)' || {
+            echo "Expected C exports are missing"; exit 1; }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libprosperopkg-${{ matrix.rid }}
+          path: artifacts/
+          if-no-files-found: error

@@ -1,6 +1,6 @@
 # LibProsperoPkg
 
-An almost complete .NET class library for building **PS5** packages. It turns a prepared
+A .NET class library for building **PS5** packages. It turns a prepared
 application folder into a complete, signed PS5 package in-process, with no external
 command-line tool to install.
 
@@ -28,7 +28,7 @@ application.
 |---|---|
 | Toolchain | .NET 10 SDK or newer |
 | Language | C# 14 |
-| NuGet dependency | `Magick.NET-Q8-AnyCPU` |
+| Dependency | `Magick.NET-Q8-AnyCPU` |
 
 ---
 
@@ -39,17 +39,13 @@ cd LibProsperoPKG/src/LibProsperoPkg
 dotnet build -c Release
 ```
 
-This produces `LibProsperoPkg.dll`. To create a NuGet package:
-
-```bash
-dotnet pack -c Release
-```
+This produces `LibProsperoPkg.dll`.
 
 ---
 
 ## Quick start
 
-Add a reference to the project (or the built `LibProsperoPkg.dll` / NuGet package) and build a
+Add a reference to the project (or the built `LibProsperoPkg.dll`) and build a
 package from a prepared application folder:
 
 ```csharp
@@ -121,7 +117,7 @@ metadata container round-trip through the reader. Two parts of a finalized image
 console-side finalization material and are filled best-effort rather than reproduced exactly:
 the finalized-image digest table and the trailing install-metadata archive. A console running
 in **debug mode**, which relaxes finalized-image verification, is the intended target.
-On-console acceptance is hardware-gated. See [docs/implementation-status.md](docs/implementation-status.md)
+On-console acceptance depends on the console's mode and firmware. See [docs/implementation-status.md](docs/implementation-status.md)
 for the precise breakdown.
 
 ---

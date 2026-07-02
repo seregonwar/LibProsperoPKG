@@ -73,7 +73,7 @@ public static class CompressedPfsFileWriter
     /// </summary>
     /// <param name="payload">The uncompressed data to wrap (the logical file the container expands to).</param>
     /// <param name="level">
-    /// The Kraken level recorded in the header (default 7, matching "--oformat nwonly"). It has no effect
+    /// The Kraken level recorded in the header (default 7, matching "nwonly"). It has no effect
     /// on stored data but is preserved so the container is indistinguishable from a tool-produced one and
     /// its file digest matches.
     /// </param>
@@ -202,7 +202,7 @@ public static class CompressedPfsFileWriter
     /// The resulting container round-trips byte-exact through the decoder.
     /// </summary>
     /// <param name="payload">The uncompressed data to wrap.</param>
-    /// <param name="level">The Kraken level recorded in the header (default 7, matching "--oformat nwonly").</param>
+    /// <param name="level">The Kraken level recorded in the header (default 7, matching "nwonly").</param>
     /// <param name="blockSize">The logical block size (default 256 KiB). Must be positive.</param>
     /// <param name="useHuffmanArrays">When true (the default), the literal/command/length streams within
     /// each chunk are Huffman-coded (entropy chunk type 2) where that is smaller than the raw form,

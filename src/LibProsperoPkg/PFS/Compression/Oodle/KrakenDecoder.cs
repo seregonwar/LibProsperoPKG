@@ -3,15 +3,13 @@
 //
 // ---------------------------------------------------------------------------------------------------
 // Kraken (newLZ) decoder for "nwonly" PFSv3 Kraken blocks: entropy-coded
-// literals/commands/offsets/lengths, the post-seed 0x80 "excess" framing, and both literal models.
-// It is an index-based translation of the Kraken *decompression* reference implementation in the
-// project "ooz" (https://github.com/powzix/ooz, kraken.cpp, GNU GPL v3), extended with the
-// excess-substream length escapes and continuation-byte excess-count parse emitted by the
-// reference encoder.
+// literals/commands/offsets/lengths, the post-seed 0x80 "excess" framing, and both literal models,
+// including the excess-substream length escapes and continuation-byte excess-count parse.
 //
-// LibProsperoPkg as a whole is licensed under the GNU GPLv3; section 13 of the GPLv3 expressly
-// permits conveying a work that links/combines GPLv3-covered code. This file carries the original
-// ooz/GPL attribution. Uses byte[]/int indices only.
+// Portions of the decode logic are an index-based translation of a GPLv3-licensed third-party
+// decompressor; see NOTICE for the attribution. LibProsperoPkg as a whole is licensed under the
+// GNU GPLv3; section 13 of the GPLv3 expressly permits conveying a work that links/combines
+// GPLv3-covered code. Uses byte[]/int indices only.
 //
 // Supported chunk-decode (DecodeBytes) array types: 0 (raw / memcpy-short) and 2/4 (Huffman, both
 // code-length encodings + single/triple stream split). Types 1 (TANS), 3 (RLE) and 5 (recursive /
@@ -58,6 +56,13 @@ internal static class KrakenDecoder
     /// to extract the reference parse from a real chunk. Null in production (zero cost).
     /// </summary>
     internal static System.Action<int, int, int, int>? ParseTrace;
+
+    /// <summary>
+    /// Diagnostic seam: when non-null, invoked with (label, srcOffset) at each newLZ array boundary
+    /// ("litStart", "litEnd", "cmdEnd", "offsEnd", "litlenEnd"). Lets a diagnostic map which entropy
+    /// array a byte-divergence falls in. Null in production (zero cost).
+    /// </summary>
+    internal static System.Action<string, int>? ArrayTrace;
 
     // Boundary flag byte bits (the on-disk id=3 entry's per-chunk markers).
     // The low nibble describes the first sub-chunk, the high nibble the second: a 256 KiB block is two
@@ -177,7 +182,7 @@ internal static class KrakenDecoder
 
         int srcEnd = srcStart + srcLen;
         int sp = srcStart;
-        int offset = withSeed ? 0 : dstStart; // ooz "offset" = dst - dst_start (0 only for the seeded chunk)
+        int offset = withSeed ? 0 : dstStart; // "offset" = dst - dst_start (0 only for the seeded chunk)
 
         var table = new LzTable();
         int rc = ReadLzTable(src, ref sp, srcEnd, dst, dstStart, dstSize, offset, table);
@@ -216,7 +221,7 @@ internal static class KrakenDecoder
             {
                 if (sp >= srcEnd)
                     return -1; // truncated excess byte count
-                excessCount += src[sp++] * 0x20; // continuation byte (newLZ_decode_chunk_phase1)
+                excessCount += src[sp++] * 0x20; // continuation byte
             }
             srcEnd -= excessCount; // trailing excess substream lives at [srcEnd, srcEnd+excessCount)
             if (srcEnd < sp)
@@ -224,16 +229,19 @@ internal static class KrakenDecoder
         }
 
         // Lit stream (bounded by dst_size).
+        ArrayTrace?.Invoke("litStart", sp);
         int n = DecodeBytes(src, sp, srcEnd, dstSize, out byte[] lit, out int litCount);
         if (n < 0) return n;
         sp += n;
         lzt.LitStream = lit; lzt.LitStreamSize = litCount;
 
         // Command stream (bounded by dst_size).
+        ArrayTrace?.Invoke("litEnd", sp);
         n = DecodeBytes(src, sp, srcEnd, dstSize, out byte[] cmd, out int cmdCount);
         if (n < 0) return n;
         sp += n;
         lzt.CmdStream = cmd; lzt.CmdStreamSize = cmdCount;
+        ArrayTrace?.Invoke("cmdEnd", sp);
 
         if (srcEnd - sp < 3)
             return -1;
@@ -268,10 +276,12 @@ internal static class KrakenDecoder
         lzt.OffsStreamSize = offsCount;
 
         // Packed litlen stream (bounded by dst_size / 4).
+        ArrayTrace?.Invoke("offsEnd", sp);
         n = DecodeBytes(src, sp, srcEnd, dstSize >> 2, out byte[] packedLitLen, out int lenCount);
         if (n < 0) return n;
         sp += n;
         lzt.LenStreamSize = lenCount;
+        ArrayTrace?.Invoke("litlenEnd", sp);
 
         lzt.OffsStream = new int[offsCount];
         lzt.LenStream = new int[lenCount];
@@ -292,8 +302,8 @@ internal static class KrakenDecoder
         byte[] packedOffs, int offsCount, int offsScaling, byte[] packedOffsExtra,
         byte[] packedLitLen, int lenCount, int[] offsStream, int[] lenStream)
     {
-        var a = OozBR.Forward(src, bsBegin, bsEnd);
-        var b = OozBR.Backward(src, bsBegin, bsEnd);
+        var a = RefBitReader.Forward(src, bsBegin, bsEnd);
+        var b = RefBitReader.Backward(src, bsBegin, bsEnd);
 
         int u32LenStreamSize = 0;
         if (!excessFlag)
@@ -348,8 +358,8 @@ internal static class KrakenDecoder
         {
             // The length-escape u32 values live in a SEPARATE dual bitstream over the trailing
             // excess substream [bsEnd, bsEnd+excessCount), read with the same fwd/bwd alternation.
-            var ea = OozBR.Forward(src, bsEnd, bsEnd + excessCount);
-            var eb = OozBR.Backward(src, bsEnd, bsEnd + excessCount);
+            var ea = RefBitReader.Forward(src, bsEnd, bsEnd + excessCount);
+            var eb = RefBitReader.Backward(src, bsEnd, bsEnd + excessCount);
             int i = 0;
             for (; i + 1 < u32LenStreamSize; i += 2)
             {
@@ -360,7 +370,7 @@ internal static class KrakenDecoder
             {
                 if (!ea.ReadLength(out u32[i])) return false;
             }
-            // (the excess seam is allowed to differ; ooz only asserts it for the main bitstream)
+            // (the excess seam is allowed to differ; the reference only asserts it for the main bitstream)
         }
         else
         {
@@ -570,7 +580,7 @@ internal static class KrakenDecoder
         int headerLen = src[sp] >= 0x80 ? 3 : 5;
         int payStart = sp + headerLen;
         if (payStart >= arrEnd) return -1;
-        var bits = OozBR.Forward(src, payStart, arrEnd);
+        var bits = RefBitReader.Forward(src, payStart, arrEnd);
         if (bits.ReadBitNoRefill() == 0) return 0; // Old/simple
         if (bits.ReadBitNoRefill() == 0) return 1; // New/RLE
         return 2;                                   // reserved
@@ -631,7 +641,7 @@ internal static class KrakenDecoder
         int arrEnd = payStart + srcSize;
         if (arrEnd > srcEnd || payStart >= arrEnd) return false;
 
-        var bits = OozBR.Forward(src, payStart, arrEnd);
+        var bits = RefBitReader.Forward(src, payStart, arrEnd);
         uint[] codePrefix = (uint[])CodePrefixOrg.Clone();
         byte[] syms = new byte[1280];
 
@@ -692,7 +702,7 @@ internal static class KrakenDecoder
     private static int DecodeBytesType12(byte[] src, int srcStart, int srcSize, byte[] output, int outputSize, int type)
     {
         int srcEnd = srcStart + srcSize;
-        var bits = OozBR.Forward(src, srcStart, srcEnd);
+        var bits = RefBitReader.Forward(src, srcStart, srcEnd);
 
         uint[] codePrefix = (uint[])CodePrefixOrg.Clone();
         byte[] syms = new byte[1280];
@@ -843,7 +853,7 @@ internal static class KrakenDecoder
         return r;
     }
 
-    private static int HuffReadCodeLengthsOld(ref OozBR bits, byte[] syms, uint[] codePrefix)
+    private static int HuffReadCodeLengthsOld(ref RefBitReader bits, byte[] syms, uint[] codePrefix)
     {
         if (bits.ReadBitNoRefill() != 0)
         {
@@ -911,14 +921,14 @@ internal static class KrakenDecoder
         }
     }
 
-    private static int HuffReadCodeLengthsNew(ref OozBR bits, byte[] syms, uint[] codePrefix)
+    private static int HuffReadCodeLengthsNew(ref RefBitReader bits, byte[] syms, uint[] codePrefix)
     {
         int forcedBits = (int)bits.ReadBitsNoRefill(2);
         int numSymbols = (int)bits.ReadBitsNoRefill(8) + 1;
         int fluff = bits.ReadFluff(numSymbols);
 
         byte[] codeLen = new byte[512 + 16];
-        var br2 = new OozBR2
+        var br2 = new RefBitReader2
         {
             B = bits.B,
             BitPos = (bits.BitPos - 24) & 7,
@@ -968,7 +978,7 @@ internal static class KrakenDecoder
 
     private struct HuffRange { public int Symbol; public int Num; }
 
-    private static int HuffConvertToRanges(HuffRange[] range, int numSymbols, int p, byte[] symlen, int symlenOff, ref OozBR bits)
+    private static int HuffConvertToRanges(HuffRange[] range, int numSymbols, int p, byte[] symlen, int symlenOff, ref RefBitReader bits)
     {
         int numRanges = p >> 1, v, symIdx = 0;
 
@@ -1005,7 +1015,7 @@ internal static class KrakenDecoder
         return numRanges + 1;
     }
 
-    // 3-stream scalar Huffman core (ooz Kraken_DecodeBytesCore, scalar tail only — no SIMD fast path).
+    // 3-stream scalar Huffman core (scalar tail only — no SIMD fast path).
     private static bool DecodeBytesCore(ref HuffReader hr, NewHuffLut lut)
     {
         byte[] B = hr.B;
@@ -1107,14 +1117,14 @@ internal static class KrakenDecoder
     }
 
     // ===========================================================================================
-    //  Golomb-Rice (ooz BitReader2 / DecodeGolombRiceLengths / DecodeGolombRiceBits)
+    //  Golomb-Rice length/bit decode.
     // ===========================================================================================
-    private struct OozBR2 { public byte[] B; public int P; public int PEnd; public int BitPos; }
+    private struct RefBitReader2 { public byte[] B; public int P; public int PEnd; public int BitPos; }
 
     private static readonly uint[] RiceVal = BuildRiceVal();
     private static readonly byte[] RiceLen = BuildRiceLen();
 
-    private static bool DecodeGolombRiceLengths(byte[] dst, int size, ref OozBR2 br)
+    private static bool DecodeGolombRiceLengths(byte[] dst, int size, ref RefBitReader2 br)
     {
         int p = br.P, pEnd = br.PEnd;
         int dstPos = 0, dstEnd = size;
@@ -1158,7 +1168,7 @@ internal static class KrakenDecoder
         return true;
     }
 
-    private static bool DecodeGolombRiceBits(byte[] dst, int size, int bitcount, ref OozBR2 br)
+    private static bool DecodeGolombRiceBits(byte[] dst, int size, int bitcount, ref RefBitReader2 br)
     {
         if (bitcount == 0) return true;
         int dstPos = 0, dstEnd = size;
@@ -1227,7 +1237,7 @@ internal static class KrakenDecoder
     {
         int dstEnd = dstStart + dstSize;
         int start = dstStart + (offset == 0 ? SeedSize : 0);
-        int dstBaseStart = dstStart - offset; // ooz dst_start = dst - offset
+        int dstBaseStart = dstStart - offset; // dst_start = dst - offset
         if (mode == 1)
             return ProcessLzRunsType1(lzt, dst, start, dstEnd, dstBaseStart);
         if (mode == 0)
@@ -1372,9 +1382,9 @@ internal static class KrakenDecoder
     }
 
     // ===========================================================================================
-    //  OozBR — faithful ooz BitReader (MSB-first, 24-bit refill window), forward & backward.
+    //  RefBitReader — MSB-first bit reader (24-bit refill window), forward & backward.
     // ===========================================================================================
-    private struct OozBR
+    private struct RefBitReader
     {
         public byte[] B;
         public int P;       // current byte index
@@ -1383,16 +1393,16 @@ internal static class KrakenDecoder
         public int BitPos;
         private bool _bwd;
 
-        public static OozBR Forward(byte[] b, int start, int end)
+        public static RefBitReader Forward(byte[] b, int start, int end)
         {
-            var r = new OozBR { B = b, P = start, Bound = end, Bits = 0, BitPos = 24, _bwd = false };
+            var r = new RefBitReader { B = b, P = start, Bound = end, Bits = 0, BitPos = 24, _bwd = false };
             r.RefillF();
             return r;
         }
 
-        public static OozBR Backward(byte[] b, int low, int high)
+        public static RefBitReader Backward(byte[] b, int low, int high)
         {
-            var r = new OozBR { B = b, P = high, Bound = low, Bits = 0, BitPos = 24, _bwd = true };
+            var r = new RefBitReader { B = b, P = high, Bound = low, Bits = 0, BitPos = 24, _bwd = true };
             r.RefillB();
             return r;
         }

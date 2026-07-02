@@ -34,9 +34,9 @@ The primary entry point.
 - **`ProsperoOutputFormat`** — `MetadataContainer` (`\x7FCNT` only, not installable) or
   `DebugImage` (`\x7FFIH`, the default, installable on a debug-mode console).
 - **`InnerImageForm`** — `Plaintext`, `Encrypted`, `Compressed` (zlib PFSC),
-  `KrakenCompressed` (PFSv3 Oodle Kraken, the `--oformat nwonly` codec).
+  `KrakenCompressed` (PFSv3 Kraken, the `nwonly` codec).
 - **`ProsperoInnerCompression`** (in `LibProsperoPkg.PKG`) — `None`, `Zlib` (installable inner
-  image), `Kraken` (`--oformat nwonly` inner image). Set on `ProsperoBuildOptions.InnerCompression`
+  image), `Kraken` (`nwonly` inner image). Set on `ProsperoBuildOptions.InnerCompression`
   / `ProsperoPkgBuildProperties.InnerCompression`; takes precedence over the legacy
   `CompressInnerImage` bool when non-`None`.
 
@@ -51,8 +51,8 @@ The primary entry point.
 | `ProsperoPkgWriter` | Low-level container writer (`ProsperoPkgWriterEntry`, `ProsperoPkgWriterOptions`). |
 | `ProsperoFihBuilder` | Wrap a `\x7FCNT` into a finalized `\x7FFIH` debug image. |
 | `ProsperoPkgSigner` | RSA-3072 metadata signing and EKPFS/PFS key derivation. |
-| `ProsperoNapsLayout` | PS5 `naps_pkg_layout.dat` (`PackageLayout_NAPS`) decoder and serializer for the `--oformat nwonly` streaming layout. `Parse`/`DecodeHeader`, `BuildLayout` (decoder and serializer are mutually consistent, including zero padding), the per-section `Encode*`/`Decode*` helpers, `SectionMap`. Record values are data-dependent on the inner-image compression run. |
-| `ProsperoImageDigests` | PS5 finalized-image / CNT digest algorithms (single primitive: **SHA3-256**). Computes byte-exact digests for all documented formulas. `ComputeSblockDigest`/`ComputeGameDigest` (`SHA3-256(plaintext outer superblock, 0x10000)` = FIH `0x30/0x70/0xD0`), `ComputeFixedInfoDigest` (`SHA3-256(FIH block)`), `ComputeBodyDigest` (`SHA3-256(CNT body)`), `ComputeEntryDigest` + `BuildEntryDigestTable` (CNT entry `0x0001`; self-slot zeroed), `ComputePackageDigest` (`SHA3-256(CNT[0:0xFE0])` = CNT `+0xFE0` = `<package-digest>`), `ComputeCntHeaderRollupDigest` (`SHA3-256(CNT[off:off+size])` = CNT `+0x100`), `ComputeContentDigest` / `ComputeHeaderDigest` / `ComputeConcatDigest` / `ForceFihRelativeImageOffset` (the GeneralDigests block — content/header/system/playgo/target, wired via `ProsperoPkgBuilder.ComputeGeneralDigests`), `LocateSuperblock`/`ComputeSblockDigestFromImage` (scan `version 2` + magic `0x0b2a3301`), `Sha3_256`. The FIH `0xB0` nested-image-content slot is console-gated. |
+| `ProsperoNapsLayout` | PS5 `naps_pkg_layout.dat` (`PackageLayout_NAPS`) decoder and serializer for the `nwonly` streaming layout. `Parse`/`DecodeHeader`, `BuildLayout` (decoder and serializer are mutually consistent, including zero padding), the per-section `Encode*`/`Decode*` helpers, `SectionMap`. Record values are data-dependent on the inner-image compression run. |
+| `ProsperoImageDigests` | PS5 finalized-image / CNT digest algorithms (single primitive: **SHA3-256**). Computes byte-exact digests for all documented formulas. `ComputeSblockDigest`/`ComputeGameDigest` (`SHA3-256(plaintext outer superblock, 0x10000)` = FIH `0x30/0x70/0xD0`), `ComputeFixedInfoDigest` (`SHA3-256(FIH block)`), `ComputeBodyDigest` (`SHA3-256(CNT body)`), `ComputeEntryDigest` + `BuildEntryDigestTable` (CNT entry `0x0001`; self-slot zeroed), `ComputePackageDigest` (`SHA3-256(CNT[0:0xFE0])` = CNT `+0xFE0` = `<package-digest>`), `ComputeCntHeaderRollupDigest` (`SHA3-256(CNT[off:off+size])` = CNT `+0x100`), `ComputeContentDigest` / `ComputeHeaderDigest` / `ComputeConcatDigest` / `ForceFihRelativeImageOffset` (the GeneralDigests block — content/header/system/playgo/target, wired via `ProsperoPkgBuilder.ComputeGeneralDigests`), `LocateSuperblock`/`ComputeSblockDigestFromImage` (scan `version 2` + magic `0x0b2a3301`), `Sha3_256`. The FIH `0xB0` nested-image-content slot is computed from the uncompressed inner PFS image during finalization. |
 | `ProsperoDdsEncoder` | Re-encode `sce_sys` icon/picture images to BC7 DDS. |
 
 ### Read model
@@ -88,17 +88,16 @@ The primary entry point.
 Each carries an options/result record pair (`ProsperoPfsLayoutOptions`/`Result`,
 `ProsperoPfsImageOptions`/`Result`, `ProsperoPfscOptions`/`Result`).
 
-### `LibProsperoPkg.PFS.Compression` — PS5 PFSv3 + Oodle Kraken codec
+### `LibProsperoPkg.PFS.Compression` — PS5 PFSv3 Kraken codec
 
-The PS5 compression-file (`PFSC` v3) codec used by
-the `--oformat nwonly` path.
+The PS5 compression-file (`PFSC` v3) codec used by the `nwonly` path.
 
 | Type | Purpose |
 |---|---|
 | `ProsperoCompressedPfsImage` | Public façade for the inner-image use of the codec — packs/unpacks a whole PFS image as a self-describing `PFSC` v3 container. `Pack`/`PackStored`/`PackFile`, `Unpack`/`UnpackFile`, detection helpers, `ValidateRoundTrip`; returns `ProsperoCompressedPfsImageResult` (raw/encoded sizes, block + stored counts, gain %). The codec the builder's `ProsperoInnerCompression.Kraken` option uses. |
 | `CompressedPfsFileWriter` | Produce a PFSv3 `PFSC` container. `WriteCompressed(payload, level, blockSize, useHuffmanArrays=true)` (Kraken with default-on Huffman entropy arrays, per-block stored fallback) / `WriteStored(payload)`. |
 | `CompressedPfsFile` | Parse a PFSv3 `PFSC` container. `Parse`, detection helpers, `VerifyFileDigest`, and `Decompress()` (drives `KrakenDecoder` for a full byte-exact decode). |
-| `Oodle.KrakenDecoder` | Internal Oodle 2.8.0 newLZ (Kraken) decoder: raw + Huffman literal/cmd/offset/length arrays, post-seed excess framing with length escapes, both literal models, multi-chunk and multi-block. Decodes two embedded reference vectors and checks SHA3-256. |
+| `Oodle.KrakenDecoder` | Internal newLZ (Kraken) decoder: raw + Huffman literal/cmd/offset/length arrays, post-seed excess framing with length escapes, both literal models, multi-chunk and multi-block. Decodes two embedded reference vectors and checks SHA3-256. |
 | `Oodle.KrakenHuffmanArrayEncoder` | Internal Huffman entropy-array encoder (chunk type 2, 3-stream split, K.3 length-limit) — the inverse of the decoder's array path; Huffman-codes each chunk's literal/command/length streams. Output round-trips through `KrakenDecoder` byte-for-byte. |
 | `PfsDigest` | SHA3-256 helpers for the per-block hashes and the `@0x28` file digest. |
 | `PfsShuffle` | The 13 pre-compression SoA de-interleave (shuffle/deshuffle) transforms. |

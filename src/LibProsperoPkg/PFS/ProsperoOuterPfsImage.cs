@@ -2,7 +2,7 @@
 // Copyright (C) 2026 SvenGDK
 //
 // PS5 *finalized-image* outer-PFS AES-XTS encryptor/decryptor — the encryption layer of
-// the `--oformat nwonly` package. This is DISTINCT from the inner-PFS
+// the `nwonly` package. This is DISTINCT from the inner-PFS
 // image crypto in ProsperoPfsImage:
 //
 // * Inner PFS (installable): AES-XTS over 0x1000-byte sub-sectors, superblock at block 0
