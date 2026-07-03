@@ -7,3 +7,17 @@ dist*/
 .DS_Store
 *.user
 *.suo
+
+# Compiled native libraries / binaries (do not commit build artifacts)
+*.dylib
+*.dll
+*.so
+*.so.*
+*.a
+*.lib
+*.o
+*.obj
+*.exe
+# Compiled test artifacts under test/ (keep tracked sources like headers)
+test/**/*.dylib
+test/**/*.dll
