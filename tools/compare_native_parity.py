@@ -2,8 +2,6 @@
 #
 # LibProsperoPkg - A library for building and inspecting PS5 packages.
 # C++ port/rewrite Copyright (C) 2026 seregonwar.
-# Original C# LibProsperoPkg by SvenGDK.
-# SPDX-License-Identifier: GPL-3.0-or-later
 
 from __future__ import annotations
 
