@@ -200,10 +200,23 @@ void write_text_file(const std::filesystem::path& path, std::string_view text)
 #endif
 }
 
+[[nodiscard]] int run_system(const std::string& cmd)
+{
+#ifdef _WIN32
+    // cmd.exe strips the outer-most pair of quotes when the command
+    // both starts and ends with ".  Append a trailing space so that
+    // the last character is never a bare quote, which avoids the
+    // path corruption that breaks CreateProcess on Windows.
+    return std::system((cmd + ' ').c_str());
+#else
+    return std::system(cmd.c_str());
+#endif
+}
+
 void expect_tool_usage_failure(const char* tool_path)
 {
     const std::string command = std::string("\"") + tool_path + "\"" + discard_output_redirect();
-    CHECK(std::system(command.c_str()) != 0);
+    CHECK(run_system(command) != 0);
 }
 
 [[nodiscard]] std::vector<std::byte> make_test_elf()
@@ -1005,7 +1018,7 @@ void test_tool_selftest()
 {
 #ifdef PROSPEROPKG_INSPECT_PATH
     const std::string command = std::string("\"") + PROSPEROPKG_INSPECT_PATH + "\" --self-test";
-    CHECK(std::system(command.c_str()) == 0);
+    CHECK(run_system(command) == 0);
 #endif
 }
 
@@ -1042,7 +1055,7 @@ void test_tool_inspects_ucp()
 
     const std::string command =
         std::string("\"") + PROSPEROPKG_INSPECT_PATH + "\" \"" + path.string() + "\"";
-    const int rc = std::system(command.c_str());
+    const int rc = run_system(command);
     std::filesystem::remove(path);
     CHECK(rc == 0);
 #endif
@@ -1060,7 +1073,7 @@ void test_tool_reports_pkg_digests()
     const std::string command =
         std::string("\"") + PROSPEROPKG_INSPECT_PATH + "\" \"" + pkg_path.string() +
         "\" > \"" + output.string() + "\"";
-    const int rc = std::system(command.c_str());
+    const int rc = run_system(command);
     CHECK(rc == 0);
 
     const auto out_bytes = read_file(output);
@@ -1091,7 +1104,7 @@ void test_tool_builds_fself()
     const std::string command =
         std::string("\"") + PROSPEROPKG_FSELF_PATH + "\" \"" + elf_path.string() +
         "\" \"" + self_path.string() + "\" 0x100 0x900";
-    const int rc = std::system(command.c_str());
+    const int rc = run_system(command);
     CHECK(rc == 0);
 
     const auto self = read_file(self_path);
@@ -1117,7 +1130,7 @@ void test_tool_builds_gp5()
     const std::string command =
         std::string("\"") + PROSPEROPKG_GP5_PATH + "\" \"" + root.string() +
         "\" \"" + output.string() + "\" --flat --type app";
-    const int rc = std::system(command.c_str());
+    const int rc = run_system(command);
     CHECK(rc == 0);
 
     const auto xml_bytes = read_file(output);
@@ -1140,7 +1153,7 @@ void test_tool_derives_keys()
         "\" UP9000-PPSA00000_00-PROSPERO00000000 00000000000000000000000000000000 "
         "000102030405060708090a0b0c0d0e0f > \"" +
         output.string() + "\"";
-    const int rc = std::system(command.c_str());
+    const int rc = run_system(command);
     CHECK(rc == 0);
 
     const auto out_bytes = read_file(output);
