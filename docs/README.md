@@ -12,8 +12,11 @@ the C++ library, the legacy-compatible C ABI, and CLI tools.
 | Document | Description |
 |---|---|
 | [cpp-port-plan.md](cpp-port-plan.md) | Current C++ migration status, implemented native surface, and validation gates. |
+| [kraken-clean-room.md](kraken-clean-room.md) | Clean-room boundary and implementation plan for native Kraken/newLZ support. |
+| [lzn-codec.md](lzn-codec.md) | Experimental clean-room LZN1 frame format, CLI usage, and local benchmark notes. |
 | [ps5-pkg-format.md](ps5-pkg-format.md) | Technical notes on the PS5 package format and the creation process. |
 | [native comparison report](../reports/native-comparison.md) | Latest local C# NativeAOT vs C++ C ABI correctness, performance, and size report. |
+| [LZN benchmark report](../reports/lzn-benchmark.md) | Local LZN1/LZNB/zlib throughput and ratio measurements. |
 
 ## Legacy C# Reference
 

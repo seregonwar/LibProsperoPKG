@@ -12,6 +12,8 @@
 #include <prosperopkg/gp5.hpp>
 #include <prosperopkg/hash.hpp>
 #include <prosperopkg/image_digests.hpp>
+#include <prosperopkg/lzn.hpp>
+#include <prosperopkg/lzn_block.hpp>
 #include <prosperopkg/pkg.hpp>
 #include <prosperopkg/pfs_keys.hpp>
 #include <prosperopkg/pfs_image.hpp>

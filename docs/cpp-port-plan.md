@@ -12,6 +12,8 @@ The C++ port/rewrite and native tooling are credited to seregonwar.
 - Preserve package bytes and parser behavior against the legacy C# implementation.
 - Prefer standard C++ and small, auditable dependencies. Crypto and image codecs should be wired
   through cross-platform packages rather than platform-specific shell-outs.
+- Keep Kraken/newLZ work clean-room: no copied or mechanically translated code from unlicensed
+  reverse-engineering repositories or from the archived legacy Oodle folder.
 - Design an optional ImGui frontend for inspection/build workflows. No GUI is shipped yet; the
   frontend is in planning and must stay separate from the small native library/runtime surface.
 
@@ -34,6 +36,11 @@ The C++ port/rewrite and native tooling are credited to seregonwar.
   NativeAOT baseline byte-for-byte when the input image already carries a deterministic seed.
 - Raw PFSC support, zlib PFSC pack/unpack support when zlib is available, and PFSv3 stored
   containers with SHA3 file/block digests for the Kraken-compatible inner-image path.
+- Experimental clean-room LZN1 codec under `src/src/lzn.cpp`, with public C++ API, exact-size
+  frame validation, raw fallback for incompressible data, and `prosperopkg-lzn` CLI support.
+- LZNB block archive codec under `src/src/lzn_block.cpp`, reworked from seregonwar's earlier
+  block-codec design and renamed for LibProsperoPkg. It provides indexed blocks, CRC-32C
+  validation, raw fallback, full/range decompression, and no mandatory LZ4/ZSTD dependency.
 - Native source-folder inner-image builder with deterministic PS5 superblock, file index, AES-XTS
   encrypted form, PFSC zlib wrapped form, and PFSv3 stored wrapped form.
 - Native CNT/FIH package builder that emits parser-readable metadata containers and debug FIH
@@ -57,11 +64,14 @@ The C++ port/rewrite and native tooling are credited to seregonwar.
 - `prosperopkg-fself` CLI tool for ELF-to-fake-SELF conversion.
 - `prosperopkg-gp5` CLI tool for folder-to-GP5 project generation.
 - `prosperopkg-keys` CLI tool for deriving EKPFS and PFS image keys from content-id/passcode/seed.
+- `prosperopkg-lzn` CLI tool for LZN1 frame compression plus LZNB block compression,
+  decompression, inspection, and local throughput benchmarking.
 - Native tests for reader/writer round-trip, FIH embedded CNT parsing, UCP, SELF, CRC-32C,
   SHA-256, SHA3-256, HMAC-SHA256, AES-128, AES-XTS, PFS key derivation, PFS image
   transforms, outer-PFS signature helpers, CNT/finalized-image digest helpers, GP5, content-id
   helpers, inspect-tool self-tests, inspect-tool digest output, fake-self tool generation, GP5 tool
-  generation, key-derivation tool output, and CLI argument validation.
+  generation, key-derivation tool output, LZN1/LZNB library/tool round-trips, range
+  decompression, checksum rejection, and CLI argument validation.
 - Optional CTest/Python comparison against a C# NativeAOT baseline directory, covering exported C
   ABI functions, parity-sensitive results, inner-PFS encryption, PFSC zlib/PFSv3 round-trips,
   microbenchmarks, and binary-size totals.
@@ -80,11 +90,11 @@ Latest local comparison against `test/libprosperopkg-osx-arm64`:
 
 - Exported C ABI functions: 15/15 matched.
 - Correctness checks: all checked ported API behavior matched the C# NativeAOT baseline.
-- Size: C++ shared library plus tools was 395,880 bytes vs 34,378,430 bytes for the C# baseline
-  folder, making the native bundle 86.84x smaller.
-- Performance: C++ was faster for content-id validation 1.87x, content-id composition 1.41x, and
-  fake-SELF generation 1.41x. The tiny ELF probe measured essentially at parity on this host
-  (0.99x).
+- Size: C++ shared library plus tools was 459,496 bytes vs 34,378,430 bytes for the C# baseline
+  folder, making the native bundle 74.82x smaller even with the LZN/LZNB tool included.
+- Performance: C++ was faster for content-id validation 2.16x, content-id composition 1.63x,
+  and fake-SELF generation 1.59x on this run. The tiny ELF probe measured slightly slower
+  at 0.95x on this host.
 - Inner-PFS encryption matched the C# NativeAOT baseline byte-for-byte on the deterministic seeded
   fixture.
 - C++ PFSC zlib pack/unpack round-tripped 131,072 bytes. C++ PFSv3 stored pack/unpack
@@ -95,13 +105,18 @@ Latest local comparison against `test/libprosperopkg-osx-arm64`:
 - `lpp_build_inner_image` and `lpp_build_package` now have native implementations and pass C ABI
   smoke checks. The current builder output is deterministic and parser-readable, but not yet
   byte-identical to the legacy C# PfsBuilder/ProsperoPkgBuilder output.
+- LZN1 and LZNB are now native clean-room codec baselines with a reproducible benchmark report in
+  `reports/lzn-benchmark.md`. Current fixtures show useful raw-fallback and range-access behavior,
+  but they do not beat zlib on ratio and do not prove Kraken superiority.
 
 Known parity gaps:
 
 - End-to-end package builder byte parity against legacy C# fixtures.
 - Full kernel-mountable PFS layout/tree generation parity.
 - Full Kraken newLZ compression/decompression parity for PFSv3 blocks beyond the native stored-block
-  path.
+  path. See [kraken-clean-room.md](kraken-clean-room.md).
+- Integration of LZN1/LZNB or a future Kraken-compatible clean-room codec into opportunistic PFSv3
+  compressed-block emission.
 - RSA metadata signing and encrypted-entry package helpers.
 - DDS/texture generation parity.
 - Fixture-based C++ vs C# byte comparisons once the legacy C# build is available locally or in CI.
@@ -113,8 +128,10 @@ Known parity gaps:
 3. Remaining crypto: RSA metadata signing and any package-specific AES/RSA helpers still used by
    encrypted entries.
 4. Full PFSv3 Kraken decoder and encoder beyond the stored-block path.
-5. End-to-end package builder parity, with fixture-driven C++ vs C# byte/field comparisons.
-6. Planned optional ImGui frontend for inspection/build workflows, kept separate from the core
+5. Evaluate whether LZN1 should remain an internal benchmark codec or become a separate supported
+   package-side compression option.
+6. End-to-end package builder parity, with fixture-driven C++ vs C# byte/field comparisons.
+7. Planned optional ImGui frontend for inspection/build workflows, kept separate from the core
    native library.
 
 ## Validation Gates

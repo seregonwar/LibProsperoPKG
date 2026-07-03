@@ -40,13 +40,20 @@ reference reader authored by seregonwar. It is kept as optional reference
 code for this fork and is not currently linked into the CMake native
 library or command-line tools.
 
-The Kraken (newLZ) decode and bitstream logic in
-legacy/csharp/src/LibProsperoPkg/PFS/Compression/Oodle/ (KrakenDecoder.cs,
-KrakenBitReader.cs, KrakenBitWriter.cs and the array-entropy helpers) is
-an index-based translation of the decompression reference implementation
-"ooz" by Powzix (kraken.cpp), licensed under the GNU General Public
-License v3.0: <https://github.com/powzix/ooz>.
+src/include/prosperopkg/lzn_block.hpp and src/src/lzn_block.cpp are a cleaned,
+renamed, GPL-3.0-or-later rework by seregonwar of his earlier block-codec
+design. The active version removes the old project-specific naming, drops
+mandatory third-party compression backends, and targets LibProsperoPkg's LZN
+compression experiments.
 
-GPL-3.0 section 13 expressly permits conveying a combined work that
-links or combines GPL-covered code, which this library relies on for the
-combination above.
+legacy/csharp/src/LibProsperoPkg/PFS/Compression/Oodle/ is retained only as
+part of the archived C# reference implementation by SvenGDK. That legacy
+Kraken/newLZ code appears to have been informed by Powzix's "ooz" project
+(<https://github.com/powzix/ooz>), whose public repository does not currently
+publish a clear license notice. The active C++ rewrite under src/ must not
+copy, translate, or vendor code from that legacy Oodle folder or from ooz
+unless a compatible license is confirmed.
+
+Any native Kraken/newLZ implementation added to src/ is expected to be a new
+clean-room implementation authored for this fork, validated with independent
+fixtures and behavior tests rather than copied source.

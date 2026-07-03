@@ -37,18 +37,18 @@
 | `pfsc-pack-unpack:csharp-baseline` | INFO | pack_rc=-1; error=SHA3-256 is required for the PS5 PFSv3 compression format but is not available on this host. |
 | `pfsc-pack-unpack:cpp-zlib` | PASS | pack_rc=0; unpack_rc=131072; bytes=131072 |
 | `pfsc-pfsv3-stored:cpp-cabi` | PASS | pack_rc=0; unpack_rc=266273; version=3; bytes=267297 |
-| `build-inner-image:cpp-cabi` | PASS | path=/var/folders/ms/6xb1xj5x6rz0_ldg1s_zhp1c0000gn/T/tmp6369fko_/inner.img; bytes=196608; mode=0xc |
-| `build-inner-image-pfsv3:cpp-cabi` | PASS | path=/var/folders/ms/6xb1xj5x6rz0_ldg1s_zhp1c0000gn/T/tmp6369fko_/inner-pfsv3.img; bytes=197632; version=3 |
-| `build-package:cpp-cabi` | PASS | path=/var/folders/ms/6xb1xj5x6rz0_ldg1s_zhp1c0000gn/T/tmp6369fko_/pkg/UP9000-PPSA00000_00-PROSPERO00000000-A0123-V0123.pkg; bytes=264704; detected=2 |
+| `build-inner-image:cpp-cabi` | PASS | path=/var/folders/ms/6xb1xj5x6rz0_ldg1s_zhp1c0000gn/T/tmpso04k4md/inner.img; bytes=196608; mode=0xc |
+| `build-inner-image-pfsv3:cpp-cabi` | PASS | path=/var/folders/ms/6xb1xj5x6rz0_ldg1s_zhp1c0000gn/T/tmpso04k4md/inner-pfsv3.img; bytes=197632; version=3 |
+| `build-package:cpp-cabi` | PASS | path=/var/folders/ms/6xb1xj5x6rz0_ldg1s_zhp1c0000gn/T/tmpso04k4md/pkg/UP9000-PPSA00000_00-PROSPERO00000000-A0123-V0123.pkg; bytes=264704; detected=2 |
 
 ## Performance
 
 | Case | Iterations | C# us/call | C++ us/call | Speedup |
 |---|---:|---:|---:|---:|
-| `is_valid_content_id` | 400000 | 0.271 | 0.145 | 1.87x |
-| `compose_content_id` | 100000 | 1.009 | 0.715 | 1.41x |
-| `is_elf` | 400000 | 0.273 | 0.277 | 0.99x |
-| `make_fself` | 2000 | 2.226 | 1.584 | 1.41x |
+| `is_valid_content_id` | 100000 | 1.028 | 0.476 | 2.16x |
+| `compose_content_id` | 25000 | 3.643 | 2.234 | 1.63x |
+| `is_elf` | 100000 | 0.906 | 0.953 | 0.95x |
+| `make_fself` | 500 | 7.006 | 4.395 | 1.59x |
 
 ## Binary Size
 
@@ -57,12 +57,13 @@
 | C# `LibProsperoPkg` | 6064504 |
 | C# baseline folder | 34378430 |
 | C++ `LibProsperoPkg` | 164392 |
-| C++ tools total | 231488 |
-| C++ library + tools | 395880 |
-| C++ `prosperopkg-inspect` | 86688 |
+| C++ tools total | 295104 |
+| C++ library + tools | 459496 |
 | C++ `prosperopkg-fself` | 42288 |
 | C++ `prosperopkg-gp5` | 62944 |
+| C++ `prosperopkg-inspect` | 86688 |
 | C++ `prosperopkg-keys` | 39568 |
+| C++ `prosperopkg-lzn` | 63616 |
 
 ## Known C++ Gaps
 

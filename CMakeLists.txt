@@ -11,6 +11,7 @@ project(
 option(LIBPROSPEROPKG_BUILD_TOOLS "Build command-line tools" ON)
 option(LIBPROSPEROPKG_BUILD_TESTS "Build native tests" ON)
 option(LIBPROSPEROPKG_BUILD_C_API "Build the legacy-compatible C ABI shared library" ON)
+option(LIBPROSPEROPKG_BUILD_FRONTEND "Build the ImGui desktop frontend" OFF)
 option(LIBPROSPEROPKG_ENABLE_IPO "Enable interprocedural optimization for release builds" ON)
 option(LIBPROSPEROPKG_OPTIMIZE_SIZE "Prefer smaller release binaries" ON)
 option(LIBPROSPEROPKG_INSTALL_STATIC "Install the static C++ library" OFF)
@@ -74,6 +75,8 @@ add_library(prosperopkg_cpp STATIC
   src/src/gp5.cpp
   src/src/hash.cpp
   src/src/image_digests.cpp
+  src/src/lzn.cpp
+  src/src/lzn_block.cpp
   src/src/pfsc.cpp
   src/src/pfs_keys.cpp
   src/src/pfs_image.cpp
@@ -133,10 +136,15 @@ if(LIBPROSPEROPKG_BUILD_TOOLS)
   add_executable(prosperopkg-keys src/tools/keys.cpp)
   target_link_libraries(prosperopkg-keys PRIVATE prosperopkg_cpp)
   lpp_apply_common_settings(prosperopkg-keys)
+
+  add_executable(prosperopkg-lzn src/tools/lzn.cpp)
+  target_link_libraries(prosperopkg-lzn PRIVATE prosperopkg_cpp)
+  lpp_apply_common_settings(prosperopkg-lzn)
 endif()
 
 if(LIBPROSPEROPKG_BUILD_TESTS)
   enable_testing()
+  find_package(Python3 COMPONENTS Interpreter QUIET)
 
   add_executable(prosperopkg_tests src/tests/test_main.cpp)
   target_link_libraries(prosperopkg_tests PRIVATE prosperopkg_cpp)
@@ -166,14 +174,27 @@ if(LIBPROSPEROPKG_BUILD_TESTS)
     add_dependencies(prosperopkg_tests prosperopkg-keys)
   endif()
 
+  if(TARGET prosperopkg-lzn)
+    target_compile_definitions(prosperopkg_tests PRIVATE
+      PROSPEROPKG_LZN_PATH="$<TARGET_FILE:prosperopkg-lzn>")
+    add_dependencies(prosperopkg_tests prosperopkg-lzn)
+  endif()
+
   add_test(NAME prosperopkg.native COMMAND prosperopkg_tests)
+
+  if(Python3_Interpreter_FOUND)
+    add_test(
+      NAME prosperopkg.clean-room
+      COMMAND Python3::Interpreter
+        ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_clean_room.py
+        ${CMAKE_CURRENT_SOURCE_DIR}/src)
+  endif()
 
   if(TARGET prosperopkg-inspect)
     add_test(NAME prosperopkg.inspect.selftest COMMAND prosperopkg-inspect --self-test)
   endif()
 
   if(LIBPROSPEROPKG_COMPARE_BASELINE AND TARGET LibProsperoPkg AND TARGET prosperopkg-inspect)
-    find_package(Python3 COMPONENTS Interpreter QUIET)
     if(Python3_Interpreter_FOUND)
       add_test(
         NAME prosperopkg.compare.csharp
@@ -202,7 +223,7 @@ if(TARGET LibProsperoPkg)
 endif()
 
 if(TARGET prosperopkg-inspect)
-  install(TARGETS prosperopkg-inspect prosperopkg-fself prosperopkg-gp5 prosperopkg-keys
+  install(TARGETS prosperopkg-inspect prosperopkg-fself prosperopkg-gp5 prosperopkg-keys prosperopkg-lzn
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 endif()
 
@@ -211,3 +232,7 @@ install(DIRECTORY src/include/prosperopkg
   FILES_MATCHING
     PATTERN "*.hpp"
     PATTERN "libprosperopkg.h")
+
+if(LIBPROSPEROPKG_BUILD_FRONTEND)
+  add_subdirectory(frontend)
+endif()

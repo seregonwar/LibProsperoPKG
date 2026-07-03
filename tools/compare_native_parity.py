@@ -307,10 +307,13 @@ def tree_size(path: Path) -> int:
 
 
 def tool_sizes(directory: Path) -> dict[str, int]:
-    names = ["prosperopkg-inspect", "prosperopkg-fself", "prosperopkg-gp5", "prosperopkg-keys"]
-    if platform.system() == "Windows":
-        names = [name + ".exe" for name in names]
-    return {name: file_size(directory / name) for name in names if (directory / name).exists()}
+    suffix = ".exe" if platform.system() == "Windows" else ""
+    tools = sorted(
+        path
+        for path in directory.glob(f"prosperopkg-*{suffix}")
+        if path.is_file() and os.access(path, os.X_OK)
+    )
+    return {path.name: file_size(path) for path in tools}
 
 
 def display_path(path: str) -> str:

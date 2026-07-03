@@ -345,6 +345,18 @@ void expect_tool_usage_failure(const char* tool_path)
     CHECK(run_program(tool_path, {}) != 0);
 }
 
+template <typename Fn>
+void expect_exception(Fn&& fn)
+{
+    bool thrown = false;
+    try {
+        fn();
+    } catch (const std::exception&) {
+        thrown = true;
+    }
+    CHECK(thrown);
+}
+
 [[nodiscard]] std::vector<std::byte> make_test_elf()
 {
     std::vector<std::byte> elf(0x120);
@@ -1012,6 +1024,101 @@ void test_pfsc_pfs_v3_stored_roundtrip()
     std::filesystem::remove(out_path);
 }
 
+void test_lzn_roundtrip()
+{
+    const auto empty = prosperopkg::lzn_compress({});
+    CHECK(prosperopkg::is_lzn_frame(empty));
+    CHECK(prosperopkg::read_lzn_frame_info(empty).stored_raw());
+    CHECK(prosperopkg::lzn_decompress(empty).empty());
+
+    constexpr std::string_view phrase = "LibProsperoPkg LZN1 clean-room fixture. ";
+    std::vector<std::byte> repetitive;
+    repetitive.reserve(0x20000);
+    while (repetitive.size() < 0x20000u) {
+        for (const char ch : phrase) {
+            repetitive.push_back(static_cast<std::byte>(ch));
+        }
+    }
+    repetitive.resize(0x20000);
+
+    const auto compressed = prosperopkg::lzn_compress(repetitive, 2);
+    const auto info = prosperopkg::read_lzn_frame_info(compressed);
+    CHECK(info.version == 1u);
+    CHECK(!info.stored_raw());
+    CHECK(compressed.size() < repetitive.size() / 4u);
+    CHECK(prosperopkg::lzn_decompress(compressed) == repetitive);
+
+    std::vector<std::byte> decoded(repetitive.size());
+    CHECK(prosperopkg::lzn_decompress_to(compressed, decoded) == repetitive.size());
+    CHECK(decoded == repetitive);
+
+    std::vector<std::byte> too_small(repetitive.size() - 1u);
+    expect_exception([&] { (void)prosperopkg::lzn_decompress_to(compressed, too_small); });
+
+    std::vector<std::byte> randomish(0x4000);
+    for (std::size_t i = 0; i < randomish.size(); ++i) {
+        randomish[i] = static_cast<std::byte>(((i * 131u) ^ (i >> 3u) ^ 0x5Au) & 0xFFu);
+    }
+    CHECK(prosperopkg::lzn_decompress(prosperopkg::lzn_compress(randomish, 4)) == randomish);
+
+    auto truncated = compressed;
+    truncated.pop_back();
+    expect_exception([&] { (void)prosperopkg::lzn_decompress(truncated); });
+
+    auto trailing = compressed;
+    trailing.push_back(std::byte{0});
+    expect_exception([&] { (void)prosperopkg::lzn_decompress(trailing); });
+
+    auto bad_magic = compressed;
+    bad_magic[0] = std::byte{'X'};
+    expect_exception([&] { (void)prosperopkg::lzn_decompress(bad_magic); });
+}
+
+void test_lzn_block_roundtrip()
+{
+    std::vector<std::byte> input(0x91000);
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        input[i] = static_cast<std::byte>((i / 97u + i / 4096u * 13u) & 0xFFu);
+    }
+
+    prosperopkg::LznBlockOptions options;
+    options.block_size = 0x10000;
+    options.level = 2;
+
+    const auto archive = prosperopkg::lzn_block_compress(input, options);
+    CHECK(prosperopkg::is_lzn_block_archive(archive));
+    const auto info = prosperopkg::read_lzn_block_info(archive);
+    CHECK(info.version == 1u);
+    CHECK(info.block_size == options.block_size);
+    CHECK(info.block_count == 10u);
+    CHECK(info.original_size == input.size());
+    CHECK(archive.size() < input.size());
+
+    const auto entries = prosperopkg::read_lzn_block_entries(archive);
+    CHECK(entries.size() == info.block_count);
+    CHECK(std::any_of(entries.begin(), entries.end(), [](const auto& entry) {
+        return !entry.stored_raw();
+    }));
+    CHECK(prosperopkg::lzn_block_decompress(archive) == input);
+    std::vector<std::byte> decoded(input.size());
+    CHECK(prosperopkg::lzn_block_decompress_to(archive, decoded) == input.size());
+    CHECK(decoded == input);
+
+    const std::size_t range_offset = 0x12345;
+    const std::size_t range_size = 0x23456;
+    const auto range = prosperopkg::lzn_block_decompress_range(archive, range_offset, range_size);
+    CHECK(range.size() == range_size);
+    CHECK(std::equal(
+        range.begin(),
+        range.end(),
+        input.begin() + static_cast<std::ptrdiff_t>(range_offset)));
+
+    auto corrupted = archive;
+    corrupted[static_cast<std::size_t>(entries.front().offset)] =
+        static_cast<std::byte>(static_cast<unsigned char>(corrupted[static_cast<std::size_t>(entries.front().offset)]) ^ 0x55u);
+    expect_exception([&] { (void)prosperopkg::lzn_block_decompress(corrupted); });
+}
+
 void test_self_parse()
 {
     constexpr std::size_t header_size = 0xC0;
@@ -1161,6 +1268,9 @@ void test_tool_usage_errors()
 #ifdef PROSPEROPKG_KEYS_PATH
     expect_tool_usage_failure(PROSPEROPKG_KEYS_PATH);
 #endif
+#ifdef PROSPEROPKG_LZN_PATH
+    expect_tool_usage_failure(PROSPEROPKG_LZN_PATH);
+#endif
 }
 
 void test_tool_inspects_ucp()
@@ -1284,13 +1394,76 @@ void test_tool_derives_keys()
 #endif
 }
 
+void test_tool_lzn_roundtrip()
+{
+#ifdef PROSPEROPKG_LZN_PATH
+    const std::filesystem::path input_path = unique_temp_path("prosperopkg-tool-lzn-test", ".bin");
+    const std::filesystem::path compressed_path = unique_temp_path("prosperopkg-tool-lzn-test", ".lzn");
+    const std::filesystem::path output_path = unique_temp_path("prosperopkg-tool-lzn-test", ".out");
+    const std::filesystem::path bench_output = unique_temp_path("prosperopkg-tool-lzn-test", ".txt");
+
+    std::vector<std::byte> input(0x30000);
+    for (std::size_t i = 0; i < input.size(); ++i) {
+        input[i] = static_cast<std::byte>((i / 32u + i / 4096u) & 0xFFu);
+    }
+    write_file(input_path, input);
+
+    CHECK(run_program(PROSPEROPKG_LZN_PATH,
+                      {"compress", input_path.string(), compressed_path.string(), "2"}) == 0);
+    CHECK(run_program(PROSPEROPKG_LZN_PATH,
+                      {"decompress", compressed_path.string(), output_path.string()}) == 0);
+    CHECK(read_file(output_path) == input);
+
+    CHECK(run_program(PROSPEROPKG_LZN_PATH,
+                      {"bench", input_path.string(), "2", "2"},
+                      &bench_output) == 0);
+    const auto bench_bytes = read_file(bench_output);
+    const std::string bench_text(reinterpret_cast<const char*>(bench_bytes.data()), bench_bytes.size());
+    CHECK(bench_text.find("LZN1 benchmark") != std::string::npos);
+    CHECK(bench_text.find("decompress:") != std::string::npos);
+
+    const std::filesystem::path block_path = unique_temp_path("prosperopkg-tool-lznb-test", ".lznb");
+    const std::filesystem::path block_output_path = unique_temp_path("prosperopkg-tool-lznb-test", ".out");
+    const std::filesystem::path block_info_output = unique_temp_path("prosperopkg-tool-lznb-test", ".txt");
+    const std::filesystem::path block_bench_output = unique_temp_path("prosperopkg-tool-lznb-test", ".txt");
+
+    CHECK(run_program(PROSPEROPKG_LZN_PATH,
+                      {"block-compress", input_path.string(), block_path.string(), "2", "65536"}) == 0);
+    CHECK(run_program(PROSPEROPKG_LZN_PATH,
+                      {"block-decompress", block_path.string(), block_output_path.string()}) == 0);
+    CHECK(read_file(block_output_path) == input);
+    CHECK(run_program(PROSPEROPKG_LZN_PATH,
+                      {"block-info", block_path.string()},
+                      &block_info_output) == 0);
+    const auto block_info_bytes = read_file(block_info_output);
+    const std::string block_info_text(reinterpret_cast<const char*>(block_info_bytes.data()), block_info_bytes.size());
+    CHECK(block_info_text.find("LZNB archive") != std::string::npos);
+    CHECK(block_info_text.find("blocks:") != std::string::npos);
+    CHECK(run_program(PROSPEROPKG_LZN_PATH,
+                      {"block-bench", input_path.string(), "2", "2", "65536"},
+                      &block_bench_output) == 0);
+    const auto block_bench_bytes = read_file(block_bench_output);
+    const std::string block_bench_text(reinterpret_cast<const char*>(block_bench_bytes.data()), block_bench_bytes.size());
+    CHECK(block_bench_text.find("LZNB benchmark") != std::string::npos);
+
+    std::filesystem::remove(input_path);
+    std::filesystem::remove(compressed_path);
+    std::filesystem::remove(output_path);
+    std::filesystem::remove(bench_output);
+    std::filesystem::remove(block_path);
+    std::filesystem::remove(block_output_path);
+    std::filesystem::remove(block_info_output);
+    std::filesystem::remove(block_bench_output);
+#endif
+}
+
 using TestFn = void (*)();
 
 } // namespace
 
 int main()
 {
-    const std::array<std::pair<std::string_view, TestFn>, 31> tests{{
+    const std::array<std::pair<std::string_view, TestFn>, 34> tests{{
         {"content-id", test_content_id},
         {"crc32c", test_crc32c},
         {"sha256", test_sha256},
@@ -1310,6 +1483,8 @@ int main()
         {"pfsc-raw-roundtrip", test_pfsc_raw_roundtrip},
         {"pfsc-zlib-roundtrip", test_pfsc_zlib_roundtrip},
         {"pfsc-pfs-v3-stored-roundtrip", test_pfsc_pfs_v3_stored_roundtrip},
+        {"lzn-roundtrip", test_lzn_roundtrip},
+        {"lzn-block-roundtrip", test_lzn_block_roundtrip},
         {"self-parse", test_self_parse},
         {"make-fself", test_make_fself},
         {"gp5-normal-serializer", test_gp5_normal_serializer},
@@ -1322,6 +1497,7 @@ int main()
         {"tool-builds-fself", test_tool_builds_fself},
         {"tool-builds-gp5", test_tool_builds_gp5},
         {"tool-derives-keys", test_tool_derives_keys},
+        {"tool-lzn-roundtrip", test_tool_lzn_roundtrip},
     }};
 
     int failed = 0;
