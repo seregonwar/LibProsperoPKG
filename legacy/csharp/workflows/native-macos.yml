@@ -1,0 +1,100 @@
+name: Native library (macOS)
+
+# Builds the LibProsperoPkg shared library (.dylib) with NativeAOT for osx-x64 and
+# osx-arm64. The AOT and shared-library settings are injected into the project at build
+# time; the committed project is never modified. Each architecture builds on a native
+# runner (Intel and Apple Silicon), so no cross-compilation toolchain is required.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: native-macos-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - rid: osx-arm64
+            runner: macos-14
+    runs-on: ${{ matrix.runner }}
+    env:
+      PROJECT: src/LibProsperoPkg/LibProsperoPkg.csproj
+      PROJECT_DIR: src/LibProsperoPkg
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Inject AOT settings and export surface
+        shell: pwsh
+        run: |
+          $csproj = $env:PROJECT
+          $text = Get-Content -Raw $csproj
+          if ($text -notmatch '<PublishAot>') {
+            $inject = "    <PublishAot>true</PublishAot>`n    <NativeLib>Shared</NativeLib>`n  </PropertyGroup>"
+            $idx = $text.IndexOf('</PropertyGroup>')
+            $text = $text.Substring(0, $idx) + $inject + $text.Substring($idx + '</PropertyGroup>'.Length)
+            Set-Content -NoNewline -Path $csproj -Value $text
+          }
+          Copy-Item '.github/native/NativeExports.cs' (Join-Path $env:PROJECT_DIR 'NativeExports.cs') -Force
+          if (-not (Select-String -Path $csproj -Pattern '<PublishAot>true</PublishAot>' -Quiet)) {
+            Write-Error 'csproj patch did not apply'
+            exit 1
+          }
+
+      - name: Publish shared library
+        run: dotnet publish "$PROJECT" -c Release -r ${{ matrix.rid }} --nologo
+
+      - name: Stage artifacts
+        shell: pwsh
+        run: |
+          $pub = Join-Path $env:PROJECT_DIR "bin/Release/net10.0/${{ matrix.rid }}/publish"
+          $mine = Get-ChildItem -Path $pub -Recurse -Include '*LibProsperoPkg.dylib'
+          if (-not $mine) {
+            Write-Error "LibProsperoPkg shared library (.dylib) was not produced in $pub"
+            Get-ChildItem -Path $pub -Recurse -Include *.dylib | ForEach-Object { Write-Host $_.FullName }
+            exit 1
+          }
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Get-ChildItem -Path $pub -Recurse -Include *.dylib | Copy-Item -Destination artifacts
+          Copy-Item '.github/native/libprosperopkg.h' artifacts
+
+      - name: Verify exported symbols
+        shell: bash
+        run: |
+          lib=$(ls artifacts/*LibProsperoPkg.dylib 2>/dev/null | head -n 1)
+          if [ -z "$lib" ]; then
+            echo "LibProsperoPkg shared library (.dylib) not found in artifacts:"
+            ls -la artifacts
+            exit 1
+          fi
+          echo "Inspecting $lib"
+          syms=$(nm -gU "$lib" | awk '{print $NF}' | sed -e 's/^_//' -e 's/@.*//')
+          missing=0
+          for s in lpp_version lpp_last_error lpp_is_valid_content_id lpp_is_valid_title_id \
+                   lpp_compose_content_id lpp_build_package lpp_detect_package_type \
+                   lpp_build_inner_image lpp_encrypt_pfs_image lpp_pack_pfs_image \
+                   lpp_unpack_pfs_image lpp_is_self lpp_is_elf lpp_is_ucp lpp_make_fself; do
+            if ! grep -Fxq "$s" <<< "$syms"; then echo "MISSING: $s"; missing=1; fi
+          done
+          if [ "$missing" -ne 0 ]; then echo "Expected C exports are missing"; exit 1; fi
+          echo "All expected exports present"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: libprosperopkg-${{ matrix.rid }}
+          path: artifacts/
+          if-no-files-found: error

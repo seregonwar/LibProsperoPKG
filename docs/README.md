@@ -1,35 +1,28 @@
 # LibProsperoPkg Documentation
 
-This folder contains the developer documentation for **LibProsperoPkg**, a
-.NET 10 / C# 14 library for building PS5 packages.
+This folder now tracks the active C++ rewrite. C#-specific docs were moved to
+`../legacy/csharp/docs` together with the original implementation so the root
+documentation can stay focused on the native codebase.
 
-## Contents
+A native ImGui frontend is in planning, but the current shipped surface remains
+the C++ library, the legacy-compatible C ABI, and CLI tools.
+
+## Current Documents
 
 | Document | Description |
 |---|---|
-| [getting-started.md](getting-started.md) | Install the SDK, build the library, and produce your first package. |
-| [api-overview.md](api-overview.md) | The public API, organized by namespace, with usage notes. |
-| [implementation-status.md](implementation-status.md) | A precise breakdown of what is implemented and what is still missing. |
-| [ps5-pkg-format.md](ps5-pkg-format.md) | A technical write-up of the PS5 package format and the end-to-end creation process. |
+| [cpp-port-plan.md](cpp-port-plan.md) | Current C++ migration status, implemented native surface, and validation gates. |
+| [ps5-pkg-format.md](ps5-pkg-format.md) | Technical notes on the PS5 package format and the creation process. |
+| [native comparison report](../reports/native-comparison.md) | Latest local C# NativeAOT vs C++ C ABI correctness, performance, and size report. |
 
-## At a glance
+## Legacy C# Reference
 
-LibProsperoPkg turns a prepared PS5 application folder into a complete, signed package
-entirely in managed code. The pipeline is:
+| Document | Description |
+|---|---|
+| [legacy getting-started](../legacy/csharp/docs/getting-started.md) | Original C# build and first-package guide. |
+| [legacy API overview](../legacy/csharp/docs/api-overview.md) | Original C# public API notes by namespace. |
+| [legacy implementation status](../legacy/csharp/docs/implementation-status.md) | Original managed implementation status. |
 
-```
-prepared folder (sce_sys/ + eboot + data)
-        │
-        ▼  inner PFS layout (ProsperoPfsLayout)
-   plaintext inner PFS image
-        │
-        ▼  AES-XTS encryption (ProsperoPfsImage)  ── optional PFSC compression (ProsperoPfsc)
-   encrypted inner PFS image
-        │
-        ▼  outer PFS + metadata (ProsperoPkgBuilder)
-   \x7FCNT metadata container
-        │
-        ▼  finalize (ProsperoFihBuilder)
-   \x7FFIH debug image  ──►  installable on a debug-mode console
-```
-
+The legacy documents are useful for parity checks, but new implementation work
+should target the C++ library, tools, tests, and CMake workflow in the repository
+root.

@@ -203,7 +203,7 @@ self-seal, the CNT-header rollup, the per-entry digest table and the GeneralDige
 inner PFS image** at its plain size — is implemented and threaded through
 the build path; like every digest its value bit-matches a specific reference package only once the inner
 Kraken encoder is byte-identical, but the formula is exact and gated self-consistent.
-See [implementation-status.md](implementation-status.md).
+See [legacy implementation status](../legacy/csharp/docs/implementation-status.md).
 
 ### 5.4 The SI segment
 
@@ -245,7 +245,7 @@ the reference layout is data-first the reported block indices and metadata offse
 as outer CNT entries (e.g. `icon0.png`) receive no inner inode and are correctly absent from the
 `<nested-image>` tree. These trees are informational metadata that the console loader does not read.
 The keyed `naps_meta_18.dat` blob is never fabricated. See
-[implementation-status.md](implementation-status.md).
+[legacy implementation status](../legacy/csharp/docs/implementation-status.md).
 
 ---
 

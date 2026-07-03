@@ -1,0 +1,176 @@
+name: Native CMake
+
+on:
+  push:
+    paths:
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'docs/**'
+      - 'tools/**'
+      - '.github/workflows/cmake.yml'
+  pull_request:
+    paths:
+      - 'CMakeLists.txt'
+      - 'src/**'
+      - 'docs/**'
+      - 'tools/**'
+      - '.github/workflows/cmake.yml'
+  workflow_dispatch:
+    inputs:
+      release_version:
+        description: 'Release version, for example 0.1.0 or v0.1.0'
+        required: true
+        default: '0.1.0'
+        type: string
+      create_release:
+        description: 'Create or update a GitHub Release with packaged native binaries'
+        required: true
+        default: false
+        type: boolean
+      prerelease:
+        description: 'Mark the GitHub Release as prerelease'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  build-test:
+    name: ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: linux-x64
+            archive: tar.gz
+          - os: macos-14
+            asset: osx-arm64
+            archive: tar.gz
+          - os: windows-latest
+            asset: windows-x64
+            archive: zip
+
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up MSVC for Ninja
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          raw="${{ github.event.inputs.release_version }}"
+          if [ -z "$raw" ]; then
+            raw="${GITHUB_REF_NAME#v}"
+          fi
+          if [[ ! "$raw" =~ ^v?[0-9]+(\.[0-9]+){1,3}([.-][A-Za-z0-9]+)*$ ]]; then
+            raw="0.1.0"
+          fi
+          version="${raw#v}"
+          echo "LPP_VERSION=$version" >> "$GITHUB_ENV"
+          echo "LPP_TAG=v$version" >> "$GITHUB_ENV"
+
+      - name: Show toolchain
+        shell: bash
+        run: |
+          cmake --version
+          ninja --version
+
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DLIBPROSPEROPKG_VERSION="$LPP_VERSION"
+          -DLIBPROSPEROPKG_BUILD_C_API=ON
+          -DLIBPROSPEROPKG_BUILD_TOOLS=ON
+          -DLIBPROSPEROPKG_BUILD_TESTS=ON
+          -DLIBPROSPEROPKG_OPTIMIZE_SIZE=ON
+          -DLIBPROSPEROPKG_ENABLE_IPO=ON
+
+      - name: Build
+        shell: bash
+        run: cmake --build build --config Release --parallel
+
+      - name: Test
+        shell: bash
+        run: ctest --test-dir build --build-config Release --output-on-failure
+
+      - name: Install
+        shell: bash
+        run: |
+          asset="libprosperopkg-${LPP_TAG}-${{ matrix.asset }}"
+          prefix="$PWD/dist/$asset"
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            cmake --install build --config Release --prefix "$prefix"
+          else
+            cmake --install build --config Release --prefix "$prefix" --strip
+          fi
+          cp README.md NOTICE LICENSE "$prefix/"
+
+      - name: Archive
+        shell: bash
+        run: |
+          asset="libprosperopkg-${LPP_TAG}-${{ matrix.asset }}"
+          cd dist
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            cmake -E tar cf "${asset}.zip" --format=zip "$asset"
+          else
+            cmake -E tar czf "${asset}.tar.gz" "$asset"
+          fi
+
+      - name: Upload package
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.asset }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+          if-no-files-found: error
+
+  github-release:
+    name: GitHub Release
+    needs: build-test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch' && inputs.create_release
+
+    steps:
+      - name: Download packages
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          raw="${{ inputs.release_version }}"
+          version="${raw#v}"
+          tag="v$version"
+          prerelease_flag=""
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            prerelease_flag="--prerelease"
+          fi
+
+          notes="Native C++ LibProsperoPkg release ${tag}.
+
+          Built with CMake + Ninja in size-optimized Release mode.
+          Assets include the C ABI shared library, CLI tools, headers, LICENSE, NOTICE, and README."
+
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" release-assets/* --clobber
+          else
+            gh release create "$tag" release-assets/* \
+              --title "LibProsperoPkg ${tag}" \
+              --notes "$notes" \
+              $prerelease_flag
+          fi
