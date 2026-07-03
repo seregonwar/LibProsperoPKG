@@ -68,19 +68,25 @@ jobs:
         shell: pwsh
         run: |
           $pub = Join-Path $env:PROJECT_DIR "bin/Release/net10.0/${{ matrix.rid }}/publish"
-          $libs = Get-ChildItem -Path $pub -Recurse -Include *.so
-          if (-not $libs) {
-            Write-Error "No shared library (.so) was produced in $pub"
+          $mine = Get-ChildItem -Path $pub -Recurse -Include '*LibProsperoPkg.so'
+          if (-not $mine) {
+            Write-Error "LibProsperoPkg shared library (.so) was not produced in $pub"
+            Get-ChildItem -Path $pub -Recurse -Include *.so | ForEach-Object { Write-Host $_.FullName }
             exit 1
           }
           New-Item -ItemType Directory -Force artifacts | Out-Null
-          $libs | Copy-Item -Destination artifacts
+          Get-ChildItem -Path $pub -Recurse -Include *.so | Copy-Item -Destination artifacts
           Copy-Item '.github/native/libprosperopkg.h' artifacts
 
       - name: Verify exported symbols
         shell: bash
         run: |
-          lib=$(ls artifacts/*.so | head -n 1)
+          lib=$(ls artifacts/*LibProsperoPkg.so 2>/dev/null | head -n 1)
+          if [ -z "$lib" ]; then
+            echo "LibProsperoPkg shared library (.so) not found in artifacts:"
+            ls -la artifacts
+            exit 1
+          fi
           echo "Inspecting $lib"
           syms=$(nm -D --defined-only "$lib" | awk '{print $NF}' | sed 's/^_//')
           missing=0
