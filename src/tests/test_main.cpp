@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -19,6 +20,20 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#else
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 namespace {
 
@@ -191,32 +206,143 @@ void write_text_file(const std::filesystem::path& path, std::string_view text)
     return root;
 }
 
-[[nodiscard]] std::string discard_output_redirect()
-{
 #ifdef _WIN32
-    return " > NUL 2>NUL";
-#else
-    return " > /dev/null 2>&1";
-#endif
+[[nodiscard]] std::string quote_windows_arg(const std::string& arg)
+{
+    const auto needs_quotes = arg.empty() ||
+        arg.find_first_of(" \t\n\v\"") != std::string::npos;
+    if (!needs_quotes) {
+        return arg;
+    }
+    std::string out = "\"";
+    std::size_t backslashes = 0;
+    for (char ch : arg) {
+        if (ch == '\\') {
+            ++backslashes;
+        } else if (ch == '"') {
+            out.append(backslashes * 2 + 1, '\\');
+            out.push_back('"');
+            backslashes = 0;
+        } else {
+            out.append(backslashes, '\\');
+            out.push_back(ch);
+            backslashes = 0;
+        }
+    }
+    out.append(backslashes * 2, '\\');
+    out.push_back('"');
+    return out;
 }
+#endif
 
-[[nodiscard]] int run_system(const std::string& cmd)
+// Runs an external program with a real argv vector, bypassing the shell so
+// that quoted path arguments survive intact on Windows (cmd.exe's quote
+// stripping would otherwise corrupt commands like: "a.exe" "C:\path\to.x").
+// When stdout_file is non-null, the child's stdout is redirected to that
+// file, replacing the Unix "> file" shell idiom.
+[[nodiscard]] int run_program(const std::string& exe,
+                              const std::vector<std::string>& args,
+                              const std::filesystem::path* stdout_file = nullptr)
 {
 #ifdef _WIN32
-    // cmd.exe strips the outer-most pair of quotes when the command
-    // both starts and ends with ".  Append a trailing space so that
-    // the last character is never a bare quote, which avoids the
-    // path corruption that breaks CreateProcess on Windows.
-    return std::system((cmd + ' ').c_str());
+    std::string command_line = quote_windows_arg(exe);
+    for (const auto& arg : args) {
+        command_line.push_back(' ');
+        command_line += quote_windows_arg(arg);
+    }
+    std::vector<char> buffer(command_line.begin(), command_line.end());
+    buffer.push_back('\0');
+
+    STARTUPINFOA startup{};
+    startup.cb = sizeof(startup);
+    SECURITY_ATTRIBUTES inheritable{};
+    inheritable.nLength = sizeof(inheritable);
+    inheritable.bInheritHandle = TRUE;
+
+    HANDLE redirect = nullptr;
+    if (stdout_file != nullptr) {
+        redirect = CreateFileA(stdout_file->string().c_str(),
+                               GENERIC_WRITE,
+                               FILE_SHARE_READ,
+                               &inheritable,
+                               CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL,
+                               nullptr);
+        if (redirect == INVALID_HANDLE_VALUE) {
+            return -1;
+        }
+        startup.dwFlags = STARTF_USESTDHANDLES;
+        startup.hStdOutput = redirect;
+        startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+        startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+    }
+
+    PROCESS_INFORMATION info{};
+    const BOOL ok = CreateProcessA(nullptr,
+                                   buffer.data(),
+                                   nullptr,
+                                   nullptr,
+                                   TRUE,
+                                   0,
+                                   nullptr,
+                                   nullptr,
+                                   &startup,
+                                   &info);
+    if (!ok) {
+        if (redirect != nullptr) {
+            CloseHandle(redirect);
+        }
+        return -1;
+    }
+
+    WaitForSingleObject(info.hProcess, INFINITE);
+    DWORD exit_code = 1;
+    GetExitCodeProcess(info.hProcess, &exit_code);
+    CloseHandle(info.hProcess);
+    CloseHandle(info.hThread);
+    if (redirect != nullptr) {
+        CloseHandle(redirect);
+    }
+    return static_cast<int>(exit_code);
 #else
-    return std::system(cmd.c_str());
+    pid_t pid = fork();
+    if (pid < 0) {
+        return -1;
+    }
+    if (pid == 0) {
+        if (stdout_file != nullptr) {
+            const int fd = ::open(stdout_file->c_str(),
+                                   O_WRONLY | O_CREAT | O_TRUNC,
+                                   0644);
+            if (fd < 0) {
+                std::_Exit(127);
+            }
+            ::dup2(fd, STDOUT_FILENO);
+            ::close(fd);
+        }
+        std::vector<const char*> argv;
+        argv.reserve(args.size() + 2);
+        argv.push_back(exe.c_str());
+        for (const auto& arg : args) {
+            argv.push_back(arg.c_str());
+        }
+        argv.push_back(nullptr);
+        ::execv(exe.c_str(), const_cast<char* const*>(argv.data()));
+        std::_Exit(127);
+    }
+    int status = 0;
+    while (::waitpid(pid, &status, 0) < 0 && errno == EINTR) {
+    }
+    if (WIFEXITED(status)) {
+        return WEXITSTATUS(status);
+    }
+    return -1;
 #endif
 }
 
 void expect_tool_usage_failure(const char* tool_path)
 {
-    const std::string command = std::string("\"") + tool_path + "\"" + discard_output_redirect();
-    CHECK(run_system(command) != 0);
+    CHECK(run_program(tool_path, {}) != 0);
 }
 
 [[nodiscard]] std::vector<std::byte> make_test_elf()
@@ -1017,8 +1143,7 @@ void test_gp5_xml_escape()
 void test_tool_selftest()
 {
 #ifdef PROSPEROPKG_INSPECT_PATH
-    const std::string command = std::string("\"") + PROSPEROPKG_INSPECT_PATH + "\" --self-test";
-    CHECK(run_system(command) == 0);
+    CHECK(run_program(PROSPEROPKG_INSPECT_PATH, {"--self-test"}) == 0);
 #endif
 }
 
@@ -1053,9 +1178,7 @@ void test_tool_inspects_ucp()
         CHECK(file.good());
     }
 
-    const std::string command =
-        std::string("\"") + PROSPEROPKG_INSPECT_PATH + "\" \"" + path.string() + "\"";
-    const int rc = run_system(command);
+    const int rc = run_program(PROSPEROPKG_INSPECT_PATH, {path.string()});
     std::filesystem::remove(path);
     CHECK(rc == 0);
 #endif
@@ -1070,10 +1193,7 @@ void test_tool_reports_pkg_digests()
     const auto image = prosperopkg::write_cnt(minimal_options());
     write_file(pkg_path, image);
 
-    const std::string command =
-        std::string("\"") + PROSPEROPKG_INSPECT_PATH + "\" \"" + pkg_path.string() +
-        "\" > \"" + output.string() + "\"";
-    const int rc = run_system(command);
+    const int rc = run_program(PROSPEROPKG_INSPECT_PATH, {pkg_path.string()}, &output);
     CHECK(rc == 0);
 
     const auto out_bytes = read_file(output);
@@ -1101,10 +1221,8 @@ void test_tool_builds_fself()
     const auto elf = make_test_elf();
     write_file(elf_path, elf);
 
-    const std::string command =
-        std::string("\"") + PROSPEROPKG_FSELF_PATH + "\" \"" + elf_path.string() +
-        "\" \"" + self_path.string() + "\" 0x100 0x900";
-    const int rc = run_system(command);
+    const int rc = run_program(PROSPEROPKG_FSELF_PATH,
+                               {elf_path.string(), self_path.string(), "0x100", "0x900"});
     CHECK(rc == 0);
 
     const auto self = read_file(self_path);
@@ -1127,10 +1245,8 @@ void test_tool_builds_gp5()
     std::filesystem::create_directories(root / "sce_sys");
     write_text_file(root / "sce_sys" / "param.json", "{}");
 
-    const std::string command =
-        std::string("\"") + PROSPEROPKG_GP5_PATH + "\" \"" + root.string() +
-        "\" \"" + output.string() + "\" --flat --type app";
-    const int rc = run_system(command);
+    const int rc = run_program(PROSPEROPKG_GP5_PATH,
+                               {root.string(), output.string(), "--flat", "--type", "app"});
     CHECK(rc == 0);
 
     const auto xml_bytes = read_file(output);
@@ -1148,12 +1264,11 @@ void test_tool_derives_keys()
 #ifdef PROSPEROPKG_KEYS_PATH
     const std::filesystem::path output = unique_temp_path("prosperopkg-tool-keys-test", ".txt");
 
-    const std::string command =
-        std::string("\"") + PROSPEROPKG_KEYS_PATH +
-        "\" UP9000-PPSA00000_00-PROSPERO00000000 00000000000000000000000000000000 "
-        "000102030405060708090a0b0c0d0e0f > \"" +
-        output.string() + "\"";
-    const int rc = run_system(command);
+    const int rc = run_program(PROSPEROPKG_KEYS_PATH,
+                               {"UP9000-PPSA00000_00-PROSPERO00000000",
+                                "00000000000000000000000000000000",
+                                "000102030405060708090a0b0c0d0e0f"},
+                               &output);
     CHECK(rc == 0);
 
     const auto out_bytes = read_file(output);
