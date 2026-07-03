@@ -21,8 +21,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - rid: osx-x64
-            runner: macos-13
           - rid: osx-arm64
             runner: macos-14
     runs-on: ${{ matrix.runner }}
