@@ -1,0 +1,11 @@
+# Exclude legacy C# code from GitHub language statistics
+# so C++ is reported as the principal language.
+legacy/** linguist-vendored=true
+
+# Do not diff/test legacy sources as part of the C++ project
+legacy/** -linguist-detectable
+
+# vendored native test fixtures / docs not counted as code
+docs/** linguist-documentation
+reports/** linguist-documentation
+legacy/csharp/docs/** linguist-documentation
