@@ -7,10 +7,6 @@ name: Native library (macOS)
 
 on:
   workflow_dispatch:
-    paths:
-      - 'LibProsperoPKG/src/**'
-      - '.github/native/**'
-      - '.github/workflows/native-macos.yml'
 
 permissions:
   contents: read
@@ -31,8 +27,8 @@ jobs:
             runner: macos-14
     runs-on: ${{ matrix.runner }}
     env:
-      PROJECT: LibProsperoPKG/src/LibProsperoPkg/LibProsperoPkg.csproj
-      PROJECT_DIR: LibProsperoPKG/src/LibProsperoPkg
+      PROJECT: src/LibProsperoPkg/LibProsperoPkg.csproj
+      PROJECT_DIR: src/LibProsperoPkg
 
     steps:
       - name: Check out

@@ -7,11 +7,7 @@ name: Native library (Linux)
 
 on:
   workflow_dispatch:
-    paths:
-      - 'LibProsperoPKG/src/**'
-      - '.github/native/**'
-      - '.github/workflows/native-linux.yml'
-
+  
 permissions:
   contents: read
 
@@ -31,8 +27,8 @@ jobs:
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
     env:
-      PROJECT: LibProsperoPKG/src/LibProsperoPkg/LibProsperoPkg.csproj
-      PROJECT_DIR: LibProsperoPKG/src/LibProsperoPkg
+      PROJECT: src/LibProsperoPkg/LibProsperoPkg.csproj
+      PROJECT_DIR: src/LibProsperoPkg
 
     steps:
       - name: Check out
