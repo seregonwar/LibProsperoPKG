@@ -7,17 +7,6 @@ name: Native library (Linux)
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
-    paths:
-      - 'LibProsperoPKG/src/**'
-      - '.github/native/**'
-      - '.github/workflows/native-linux.yml'
-  pull_request:
-    paths:
-      - 'LibProsperoPKG/src/**'
-      - '.github/native/**'
-      - '.github/workflows/native-linux.yml'
 
 permissions:
   contents: read
@@ -89,11 +78,20 @@ jobs:
           Copy-Item '.github/native/libprosperopkg.h' artifacts
 
       - name: Verify exported symbols
+        shell: bash
         run: |
           lib=$(ls artifacts/*.so | head -n 1)
           echo "Inspecting $lib"
-          nm -D --defined-only "$lib" | grep -E 'lpp_(version|build_package|compose_content_id)' || {
-            echo "Expected C exports are missing"; exit 1; }
+          syms=$(nm -D --defined-only "$lib" | awk '{print $NF}' | sed 's/^_//')
+          missing=0
+          for s in lpp_version lpp_last_error lpp_is_valid_content_id lpp_is_valid_title_id \
+                   lpp_compose_content_id lpp_build_package lpp_detect_package_type \
+                   lpp_build_inner_image lpp_encrypt_pfs_image lpp_pack_pfs_image \
+                   lpp_unpack_pfs_image lpp_is_self lpp_is_elf lpp_is_ucp lpp_make_fself; do
+            if ! grep -Fxq "$s" <<< "$syms"; then echo "MISSING: $s"; missing=1; fi
+          done
+          if [ "$missing" -ne 0 ]; then echo "Expected C exports are missing"; exit 1; fi
+          echo "All expected exports present"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4

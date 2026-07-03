@@ -23,6 +23,7 @@ LibProsperoPKG/
         ├── ProsperoPackageBuilder.cs   high-level entry point
         ├── PKG/                         container build/read/write, signing, DDS, FIH
         ├── PFS/                         inner PFS layout, AES-XTS, PFSC compression
+        ├── Content/                     UCP and fake-self content codecs
         ├── GP5/                         GP5 project model
         ├── Keys/                        publishing key access
         ├── PlayGo/                      PlayGo / "about" helper file generators

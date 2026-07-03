@@ -554,7 +554,7 @@ public static class ProsperoSiArchive
     // <chunkinfo> / <pfs-image> / <nested-image> introspection sections.
     //
     // These describe the layout of the image THIS builder produced: the outer + inner PFS inode
-    // trees and the PlayGo chunk map, read straight from the build state (PfsBuilder.CaptureImageTree
+    // trees and the PlayGo chunk map, read straight from the build state (ProsperoPfsBuilder.CaptureImageTree
     // and the finalized geometry). They are self-consistent with the emitted bytes (block indices
     // reflect the superblock-first layout, the outer seed is deterministic all-zeros, and inner files
     // are stored raw so nested files show size == plain). The console loader does not read the

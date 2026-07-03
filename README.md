@@ -88,11 +88,12 @@ Console.WriteLine($"Entries:    {pkg.Entries.Count}");
 | Namespace | Key types |
 |---|---|
 | `LibProsperoPkg` | `ProsperoPackageBuilder`, `ProsperoBuildOptions`, `ProsperoBuildResult`, `ProsperoPackageMode`, `ProsperoOutputFormat`, `InnerImageForm` |
-| `LibProsperoPkg.PKG` | `ProsperoPkgBuilder`, `ProsperoPkgReader`, `ProsperoPkgWriter`, `ProsperoFihBuilder`, `ProsperoPkgSigner`, `ProsperoDdsEncoder`, `ProsperoPkg`, `ProsperoPkgHeader` |
+| `LibProsperoPkg.PKG` | `ProsperoPkgBuilder`, `ProsperoPkgReader`, `ProsperoCntWriter`, `ProsperoFihBuilder`, `ProsperoPkgSigner`, `ProsperoDdsEncoder`, `ProsperoPkg`, `ProsperoPkgHeader` |
 | `LibProsperoPkg.PFS` | `ProsperoPfsLayout`, `ProsperoPfsImage`, `ProsperoPfsc` |
 | `LibProsperoPkg.GP5` | `Gp5Creator`, `Gp5Project` and its element model |
 | `LibProsperoPkg.Keys` | `ProsperoKeys` |
 | `LibProsperoPkg.PlayGo` | `ProsperoPlayGo` |
+| `LibProsperoPkg.Content` | `ProsperoUcp`, `ProsperoFself` |
 
 See **[docs/](docs/)** for the full feature status and the PS5 package technical write-up.
 

@@ -15,6 +15,8 @@ using System;
 using System.Runtime.InteropServices;
 using System.Text;
 using LibProsperoPkg;
+using LibProsperoPkg.Content;
+using LibProsperoPkg.PFS.Compression;
 using LibProsperoPkg.PKG;
 
 namespace LibProsperoPkg.Native;
@@ -24,7 +26,7 @@ internal static unsafe class NativeExports
     [ThreadStatic]
     private static string? _lastError;
 
-    private static readonly byte* VersionPtr = AllocUtf8("LibProsperoPkg 1.0.0");
+    private static readonly byte* VersionPtr = AllocUtf8("LibProsperoPkg 1.3.0");
 
     /// <summary>Returns a pointer to a static, NUL-terminated version string.</summary>
     [UnmanagedCallersOnly(EntryPoint = "lpp_version")]
@@ -114,6 +116,187 @@ internal static unsafe class NativeExports
             return -1;
         }
     }
+
+    /// <summary>
+    /// Detects the package type of the file at <paramref name="path"/>.
+    /// </summary>
+    /// <returns>
+    /// The package type as an integer (0 = Meta, 1 = FullRetail, 2 = FullDebug), or -1 when the
+    /// file is not a recognized package or cannot be read (call lpp_last_error for details).
+    /// </returns>
+    [UnmanagedCallersOnly(EntryPoint = "lpp_detect_package_type")]
+    public static int DetectPackageType(byte* path)
+    {
+        try
+        {
+            ProsperoPkgType? type = ProsperoPkgReader.DetectType(Utf8ToString(path) ?? "");
+            return type is null ? -1 : (int)type.Value;
+        }
+        catch (Exception ex)
+        {
+            _lastError = ex.Message;
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Lays a prepared folder out into an inner-PFS image. <paramref name="form"/> selects the
+    /// image form (0 = Plaintext, 1 = Encrypted, 2 = Compressed zlib, 3 = KrakenCompressed). The
+    /// written image path is copied into <paramref name="outPath"/> as UTF-8.
+    /// </summary>
+    /// <returns>0 on success; a negative value on failure (call lpp_last_error for the message).</returns>
+    [UnmanagedCallersOnly(EntryPoint = "lpp_build_inner_image")]
+    public static int BuildInnerImage(
+        byte* sourceFolder,
+        byte* outputPath,
+        byte* contentId,
+        byte* passcode,
+        int form,
+        byte* outPath,
+        int outPathCapacity)
+    {
+        try
+        {
+            string result = ProsperoPackageBuilder.BuildInnerImage(
+                Utf8ToString(sourceFolder) ?? "",
+                Utf8ToString(outputPath) ?? "",
+                Utf8ToString(contentId) ?? "",
+                Fallback(Utf8ToString(passcode), new string('0', 32)),
+                ToEnum<InnerImageForm>(form));
+            int written = WriteUtf8(result, outPath, outPathCapacity);
+            return written < 0 ? written : 0;
+        }
+        catch (Exception ex)
+        {
+            _lastError = ex.Message;
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// AES-XTS-encrypts a prepared plaintext inner-PFS image in place, using keys derived from the
+    /// content id and passcode.
+    /// </summary>
+    /// <returns>0 on success; a negative value on failure (call lpp_last_error for the message).</returns>
+    [UnmanagedCallersOnly(EntryPoint = "lpp_encrypt_pfs_image")]
+    public static int EncryptPfsImage(byte* pfsImagePath, byte* contentId, byte* passcode)
+    {
+        try
+        {
+            ProsperoPackageBuilder.EncryptPfsImage(
+                Utf8ToString(pfsImagePath) ?? "",
+                Utf8ToString(contentId) ?? "",
+                Fallback(Utf8ToString(passcode), new string('0', 32)));
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            _lastError = ex.Message;
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Packs a plaintext PFS image into a PFSv3 PFSC container using Kraken. A non-positive
+    /// <paramref name="level"/> or <paramref name="blockSize"/> selects the default (7 / 262144).
+    /// </summary>
+    /// <returns>0 on success; a negative value on failure (call lpp_last_error for the message).</returns>
+    [UnmanagedCallersOnly(EntryPoint = "lpp_pack_pfs_image")]
+    public static int PackPfsImage(byte* inputImagePath, byte* outputPath, int level, int blockSize)
+    {
+        try
+        {
+            ProsperoCompressedPfsImage.PackFile(
+                Utf8ToString(inputImagePath) ?? "",
+                Utf8ToString(outputPath) ?? "",
+                level > 0 ? level : ProsperoCompressedPfsImage.DefaultLevel,
+                blockSize > 0 ? blockSize : ProsperoCompressedPfsImage.DefaultBlockSize);
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            _lastError = ex.Message;
+            return -1;
+        }
+    }
+
+    /// <summary>
+    /// Unpacks a PFSv3 PFSC container back into a plaintext PFS image.
+    /// </summary>
+    /// <returns>The number of bytes written on success; -1 on failure (call lpp_last_error).</returns>
+    [UnmanagedCallersOnly(EntryPoint = "lpp_unpack_pfs_image")]
+    public static long UnpackPfsImage(byte* inputPath, byte* outputPath)
+    {
+        try
+        {
+            return ProsperoCompressedPfsImage.UnpackFile(
+                Utf8ToString(inputPath) ?? "",
+                Utf8ToString(outputPath) ?? "");
+        }
+        catch (Exception ex)
+        {
+            _lastError = ex.Message;
+            return -1;
+        }
+    }
+
+    /// <summary>Returns 1 when the buffer holds a SELF container, otherwise 0.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "lpp_is_self")]
+    public static int IsSelf(byte* data, int length)
+        => ProsperoFself.IsSelf(AsSpan(data, length)) ? 1 : 0;
+
+    /// <summary>Returns 1 when the buffer holds a 64-bit ELF, otherwise 0.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "lpp_is_elf")]
+    public static int IsElf(byte* data, int length)
+        => ProsperoFself.IsElf(AsSpan(data, length)) ? 1 : 0;
+
+    /// <summary>Returns 1 when the buffer holds a UCP archive, otherwise 0.</summary>
+    [UnmanagedCallersOnly(EntryPoint = "lpp_is_ucp")]
+    public static int IsUcp(byte* data, int length)
+        => ProsperoUcp.IsUcp(AsSpan(data, length)) ? 1 : 0;
+
+    /// <summary>
+    /// Generates a fake-self from a 64-bit ELF. Pass <paramref name="outBuffer"/> = NULL or
+    /// <paramref name="capacity"/> = 0 to query the required size (returned as a positive value
+    /// without writing).
+    /// </summary>
+    /// <returns>
+    /// The number of bytes written (or required, in query mode); -1 on failure or when a non-zero
+    /// buffer is too small (call lpp_last_error for the message).
+    /// </returns>
+    [UnmanagedCallersOnly(EntryPoint = "lpp_make_fself")]
+    public static int MakeFself(byte* elf, int elfLength, byte* outBuffer, int capacity)
+    {
+        try
+        {
+            if (elf is null || elfLength <= 0)
+            {
+                _lastError = "empty ELF input";
+                return -1;
+            }
+
+            byte[] result = ProsperoFself.MakeFself(new ReadOnlySpan<byte>(elf, elfLength).ToArray());
+            if (outBuffer is null || capacity <= 0)
+                return result.Length;
+
+            if (capacity < result.Length)
+            {
+                _lastError = $"buffer too small (need {result.Length})";
+                return -1;
+            }
+
+            result.AsSpan().CopyTo(new Span<byte>(outBuffer, capacity));
+            return result.Length;
+        }
+        catch (Exception ex)
+        {
+            _lastError = ex.Message;
+            return -1;
+        }
+    }
+
+    private static ReadOnlySpan<byte> AsSpan(byte* data, int length)
+        => data is null || length <= 0 ? default : new ReadOnlySpan<byte>(data, length);
 
     private static string Fallback(string? value, string fallback)
         => string.IsNullOrEmpty(value) ? fallback : value;

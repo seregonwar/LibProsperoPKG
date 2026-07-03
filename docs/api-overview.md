@@ -15,12 +15,15 @@ The primary entry point.
 | Member | Purpose |
 |---|---|
 | `Build(ProsperoBuildOptions, Action<string>?)` | Build a package from a prepared folder. Returns `ProsperoBuildResult`. |
-| `BuildInnerPfsLayout(...)` | Lay a folder out into a plaintext inner-PFS image. |
-| `BuildInnerImage(...)` | Run the full inner-image pipeline (plaintext / encrypted / zlib-compressed / Kraken-compressed). |
-| `EncryptPfsImage(...)` | AES-XTS-encrypt a prepared plaintext inner-PFS image in place. |
-| `IsValidContentId` / `IsValidTitleId` | Validate identifiers. |
+| `BuildInnerPfsLayout(...)` | Lay a folder out into a plaintext inner-PFS image. Returns `ProsperoPfsLayoutResult`. |
+| `BuildInnerImage(...)` | Run the full inner-image pipeline (plaintext / encrypted / zlib-compressed / Kraken-compressed). Returns the written image path. |
+| `EncryptPfsImage(...)` | AES-XTS-encrypt a prepared plaintext inner-PFS image in place. Returns `ProsperoPfsImageResult`. |
+| `CompareContainers(referencePkg, candidatePkg)` | Compare two packages field by field. Returns the list of differences. |
 | `ComposeContentId(publisher, titleId, label)` | Build a well-formed 36-char content id. |
-| `VolumeTypeForMode` / `IsDlcMode` | Map a `ProsperoPackageMode` to volume metadata. |
+| `IsValidContentId` / `IsValidTitleId` | Validate identifiers. |
+| `VolumeTypeForMode(mode)` | Map a `ProsperoPackageMode` to the GP5 `Gp5VolumeType`. |
+| `ProsperoVolumeTypeForMode(mode)` | Map a `ProsperoPackageMode` to the container `ProsperoVolumeType`. |
+| `IsDlcMode(mode)` | Report whether a mode is additional-content. |
 | `KeysAvailable` | Reports whether publishing key material is available. |
 
 ### Supporting types
@@ -48,12 +51,18 @@ The primary entry point.
 |---|---|
 | `ProsperoPkgBuilder` | Build the outer PFS + `\x7FCNT` metadata container. |
 | `ProsperoPkgReader` | `DetectType(path/stream)` and `Read(path/stream)` for existing packages. |
-| `ProsperoPkgWriter` | Low-level container writer (`ProsperoPkgWriterEntry`, `ProsperoPkgWriterOptions`). |
-| `ProsperoFihBuilder` | Wrap a `\x7FCNT` into a finalized `\x7FFIH` debug image. |
+| `ProsperoCntWriter` | Low-level `\x7FCNT` container writer over the `ProsperoCnt` model (`ProsperoCntEntry`, `ProsperoCntHeader`, `ProsperoCntEntryNames`, entry-id enums). |
+| `ProsperoFihBuilder` | Wrap a `\x7FCNT` into a finalized `\x7FFIH` image. `BuildFromCnt(cntPath, fihOutputPath, ProsperoFihVariant)`. |
 | `ProsperoPkgSigner` | RSA-3072 metadata signing and EKPFS/PFS key derivation. |
-| `ProsperoNapsLayout` | PS5 `naps_pkg_layout.dat` (`PackageLayout_NAPS`) decoder and serializer for the `nwonly` streaming layout. `Parse`/`DecodeHeader`, `BuildLayout` (decoder and serializer are mutually consistent, including zero padding), the per-section `Encode*`/`Decode*` helpers, `SectionMap`. Record values are data-dependent on the inner-image compression run. |
+| `ProsperoNapsLayout` | PS5 `naps_pkg_layout.dat` decoder and serializer for the `nwonly` streaming layout. `Parse`/`DecodeHeader` (returning a `NapsLayoutDocument` over the `Naps*` record types), `BuildLayout` (decoder and serializer are mutually consistent, including zero padding), the per-section `Encode*`/`Decode*` helpers, `SectionMap`. Record values are data-dependent on the inner-image compression run. |
 | `ProsperoImageDigests` | PS5 finalized-image / CNT digest algorithms (single primitive: **SHA3-256**). Computes byte-exact digests for all documented formulas. `ComputeSblockDigest`/`ComputeGameDigest` (`SHA3-256(plaintext outer superblock, 0x10000)` = FIH `0x30/0x70/0xD0`), `ComputeFixedInfoDigest` (`SHA3-256(FIH block)`), `ComputeBodyDigest` (`SHA3-256(CNT body)`), `ComputeEntryDigest` + `BuildEntryDigestTable` (CNT entry `0x0001`; self-slot zeroed), `ComputePackageDigest` (`SHA3-256(CNT[0:0xFE0])` = CNT `+0xFE0` = `<package-digest>`), `ComputeCntHeaderRollupDigest` (`SHA3-256(CNT[off:off+size])` = CNT `+0x100`), `ComputeContentDigest` / `ComputeHeaderDigest` / `ComputeConcatDigest` / `ForceFihRelativeImageOffset` (the GeneralDigests block — content/header/system/playgo/target, wired via `ProsperoPkgBuilder.ComputeGeneralDigests`), `LocateSuperblock`/`ComputeSblockDigestFromImage` (scan `version 2` + magic `0x0b2a3301`), `Sha3_256`. The FIH `0xB0` nested-image-content slot is computed from the uncompressed inner PFS image during finalization. |
 | `ProsperoDdsEncoder` | Re-encode `sce_sys` icon/picture images to BC7 DDS. |
+| `ProsperoInnerCompression` | Inner-image codec selector: `None`, `Zlib`, `Kraken`. Set on `ProsperoBuildOptions.InnerCompression` / `ProsperoPkgBuildProperties.InnerCompression`. |
+| `ProsperoFihVariant` | Finalized-image variant for `ProsperoFihBuilder`: `Debug`, `Official`. |
+| `ProsperoNapsMeta` | Build the `naps_meta_300` install-metadata descriptor from the inner-image geometry. `BuildMeta300`, `BuildMeta300FromInnerImageSize`. |
+| `ProsperoSystemFiles` | Validate backend-signed `sce_sys` files before packing. `Validate`, `ValidateNpbind`, `ValidateNptitle`, `ValidateLicenseDat`, `ValidateLicenseInfo`. |
+| `ProsperoSiArchive` | Build the trailing `sce_suppl` install archive: `pfsimage.xml`, the `naps_meta_*` descriptors, and the copied PlayGo files. `BuildDebugSiSegment`, `BuildPfsImageXml`, `WriteZip`, with `ProsperoSiMember` and `ProsperoPfsImageXmlOptions`. |
+| `ProsperoChunkInfoModel` | Chunk/scenario model threaded from the GP5 project into the install archive. |
 
 ### Read model
 
@@ -83,10 +92,19 @@ The primary entry point.
 | `ProsperoOuterPfsSignature` | PS5 nwonly outer-PFS signing primitives. `ComputeBlockHash` (plain SHA3-256 per-block/dinode hash), `ComputeSuperblockIcv`/`WriteSuperblockIcv` (`SHA3-256(superblock[0:0x5a0])` with the `icv` field zeroed), `BlockSector(index, signed)` (the bit-47 signed-block sector flag). |
 | `ProsperoOuterPfsBuilder` | PS5 nwonly outer-PFS **structure generator**: assembles the data-first 11-block plaintext outer image from its outer files (`pfs_image.dat`, `naps_pkg_layout.dat`) — inode table with per-block SHA3 hashes, super-root/uroot dirents, the `\x7fFLT` inode_flat_path_table (custom reduced-Keccak path hash), and the signed superblock (+`icv`). `BuildPlaintext`, `Encrypt`, `BuildEncrypted`. Produces byte-exact plaintext and ciphertext output. Types: `ProsperoOuterFile`, `ProsperoOuterPfsBuildParameters`, `ProsperoOuterPfsBuildResult`. |
 | `ProsperoPfsKeys` | PFS-image key derivation using SHA3-256. `DeriveEkpfs(contentId, passcode)`, `DeriveImageEncryptionKeys(ekpfs, seed)` → `(tweakKey, dataKey)`, overload `DeriveImageEncryptionKeys(contentId, passcode, seed)` → `(tweakKey, dataKey)`, `DeriveImageSignKey(ekpfs, seed)`. |
-| `ProsperoPfsc` | PFSC block compression. `PackFile`, `Unpack`, `IsPfsc`. |
+| `ProsperoPfsc` | High-level PFSC block compression. `PackFile`, `Unpack`, `IsPfsc`. |
+| `ProsperoPfscEncoder` | Lower-level PFSC container encoder. `Encode` (buffer or stream), `HeaderSize`, `ShouldSkipExecutableCompression`, with `ProsperoPfscEncoderOptions` / `ProsperoPfscEncodeStats`. |
+| `ProsperoPfscReader` | Random-access reader over a PFSC container. `Read`, `ReadSector`, `SectorSize`, `DataLength`. |
 
-Each carries an options/result record pair (`ProsperoPfsLayoutOptions`/`Result`,
+Each high-level entry carries an options/result record pair (`ProsperoPfsLayoutOptions`/`Result`,
 `ProsperoPfsImageOptions`/`Result`, `ProsperoPfscOptions`/`Result`).
+
+The namespace also exposes the low-level filesystem model that the builder and reader operate on:
+`ProsperoPfsBuilder`, `ProsperoPfsReader`, `ProsperoPfsHeader`, `ProsperoInode`, the on-disk dinode
+records (`ProsperoDinodeD32`, `ProsperoDinodeS32`, `ProsperoDinodeS64`), `ProsperoFlatPathTable`,
+`ProsperoPfsDirent`, the filesystem-tree nodes (`ProsperoFsNode`, `ProsperoFsDir`, `ProsperoFsFile`),
+`ProsperoXtsDecryptReader`, and the supporting enums (`ProsperoDirentType`, `ProsperoInodeFlags`,
+`ProsperoInodeMode`, `ProsperoPfsMode`, `ProsperoOuterBlockKind`).
 
 ### `LibProsperoPkg.PFS.Compression` — PS5 PFSv3 Kraken codec
 
@@ -96,11 +114,15 @@ The PS5 compression-file (`PFSC` v3) codec used by the `nwonly` path.
 |---|---|
 | `ProsperoCompressedPfsImage` | Public façade for the inner-image use of the codec — packs/unpacks a whole PFS image as a self-describing `PFSC` v3 container. `Pack`/`PackStored`/`PackFile`, `Unpack`/`UnpackFile`, detection helpers, `ValidateRoundTrip`; returns `ProsperoCompressedPfsImageResult` (raw/encoded sizes, block + stored counts, gain %). The codec the builder's `ProsperoInnerCompression.Kraken` option uses. |
 | `ProsperoCompressedPfsFileWriter` | Produce a PFSv3 `PFSC` container. `WriteCompressed(payload, level, blockSize, useHuffmanArrays=true)` (Kraken with default-on Huffman entropy arrays, per-block stored fallback) / `WriteStored(payload)`. |
-| `ProsperoCompressedPfsFile` | Parse a PFSv3 `PFSC` container. `Parse`, detection helpers, `VerifyFileDigest`, and `Decompress()` (drives `KrakenDecoder` for a full byte-exact decode). |
-| `Oodle.KrakenDecoder` | Internal newLZ (Kraken) decoder: raw + Huffman literal/cmd/offset/length arrays, post-seed excess framing with length escapes, both literal models, multi-chunk and multi-block. Decodes two embedded reference vectors and checks SHA3-256. |
-| `Oodle.KrakenHuffmanArrayEncoder` | Internal Huffman entropy-array encoder (chunk type 2, 3-stream split, K.3 length-limit) — the inverse of the decoder's array path; Huffman-codes each chunk's literal/command/length streams. Output round-trips through `KrakenDecoder` byte-for-byte. |
+| `ProsperoCompressedPfsFile` | Parse a PFSv3 `PFSC` container. `Parse`, detection helpers, `VerifyFileDigest`, and `Decompress()` for a full byte-exact decode. |
 | `ProsperoPfsDigest` | SHA3-256 helpers for the per-block hashes and the `@0x28` file digest. |
-| `ProsperoPfsShuffle` | The 13 pre-compression SoA de-interleave (shuffle/deshuffle) transforms. |
+| `ProsperoPfsShuffle` | The pre-compression de-interleave (shuffle/deshuffle) transforms. `ProsperoPfsShufflePattern` names each pattern. |
+| `ProsperoPfsCompressionConstants` | Block size, level and format constants for the codec. |
+| `ProsperoCompressionAlgorithm` / `ProsperoPfsCompressionFormat` | The codec (`QuickZ`, `Zlib`, `Kraken`) and container-format version (`Version0`..`Version3`) enums. |
+
+The newLZ (Kraken) decoder and the Huffman entropy-array encoder are internal implementation
+details of these types and are not part of the public surface. `PfsBlock` and
+`ProsperoCompressedPfsImageResult` describe a single block and the pack result.
 
 ---
 
@@ -111,7 +133,8 @@ The PS5 compression-file (`PFSC` v3) codec used by the `nwonly` path.
 - **`Gp5Project`** — the GP5 document model, with both the "normal" (`rootdir`-walked) and
   "flat" (`files`/`folders`-listed) layouts represented via `Gp5Layout`. Elements:
   `Gp5Volume`, `Gp5Package`, `Gp5ChunkInfo`, `Gp5Chunk`, `Gp5Scenarios`, `Gp5Scenario`,
-  `Gp5RootDir`, `Gp5File`, `Gp5Dir`.
+  `Gp5RootDir`, `Gp5File`, `Gp5Dir`. `Gp5VolumeType` names the volume kind
+  (`prospero_app`, `prospero_patch`, `prospero_ac`, `prospero_ac_nodata`).
 
 ---
 
@@ -139,3 +162,47 @@ The PS5 compression-file (`PFSC` v3) codec used by the `nwonly` path.
   `IsSelf`, `IsElf`, `Parse`, `Validate`, and `MakeFself` (with `FselfOptions` for app and firmware
   version and an optional authority id). The read model exposes `SelfImage`, `SelfSegment`, and
   `SelfExtInfo`.
+
+---
+
+## `LibProsperoPkg.Util` — low-level helpers
+
+Building blocks shared across the library. Most consumers use the higher-level types above; these
+are exposed for advanced use.
+
+- **`Crypto`** — SHA-256 / SHA3-256, HMAC-SHA-256, AES-CBC/CFB, RSA-2048, the PFS key-generation
+  primitives (`PfsGenCryptoKey`, `PfsGenEncKey`, `PfsGenSignKey`), `ComputeKeys`, `CreateKeystone`,
+  and `Xor`.
+- **`CryptoKeys`** and **`RSAKeyset`** — the key constants and the RSA key-set model the signer uses.
+- **`ProsperoCrc32C`** — CRC-32C (`Compute`, `Update`).
+- **`XtsBlockTransform`** — AES-XTS sector encrypt/decrypt.
+- **`MersenneTwister`** — the seed generator.
+- Stream helpers: `OffsetStream`, `SubStream`, `StreamReader`, `WriterBase`, and the
+  `IMemoryReader` / `IMemoryAccessor` accessors with `MemoryMappedViewAccessor_`.
+
+---
+
+## Native shared library (C ABI)
+
+The library can be published as a shared library (`.so` / `.dylib`) with a flat C export surface,
+built by the `native-linux` and `native-macos` workflows. The export source and the matching
+`libprosperopkg.h` header live in the repository under `.github/native/`. The committed project is
+unchanged; the workflow injects the NativeAOT build properties at build time.
+
+| Function | Purpose |
+|---|---|
+| `lpp_version` | Return the library version string. |
+| `lpp_last_error` | Return the last error message on the calling thread. |
+| `lpp_is_valid_content_id` / `lpp_is_valid_title_id` | Validate identifiers. |
+| `lpp_compose_content_id` | Compose a 36-char content id. |
+| `lpp_build_package` | Run the full build from a prepared folder. |
+| `lpp_detect_package_type` | Return the package type of a file (`LPP_TYPE_*`). |
+| `lpp_build_inner_image` | Lay a folder out into an inner-PFS image (`LPP_FORM_*`). |
+| `lpp_encrypt_pfs_image` | AES-XTS-encrypt a plaintext inner-PFS image in place. |
+| `lpp_pack_pfs_image` / `lpp_unpack_pfs_image` | Pack / unpack a PFSv3 PFSC container. |
+| `lpp_is_self` / `lpp_is_elf` / `lpp_is_ucp` | Detect a SELF, a 64-bit ELF, or a UCP archive. |
+| `lpp_make_fself` | Generate a fake-self from a 64-bit ELF. |
+
+Strings cross the boundary as UTF-8. String-output functions return the number of bytes written, or
+a negative value when the caller buffer is too small. Enums pass as ints; the header defines the
+`LPP_MODE_*`, `LPP_OUTPUT_*`, `LPP_INNER_*`, `LPP_FORM_*`, and `LPP_TYPE_*` values.

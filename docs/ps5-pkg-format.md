@@ -237,7 +237,7 @@ reference Downloads package).
 `<longname>`, the full container/mount geometry and the CNT entry table, all populated with the build's
 own self-consistent digests. The deep `<chunkinfo>`/`<pfs-image>` (outer PFS) / `<nested-image>` (inner
 PFS) introspection trees are now emitted as well, walked from the build's own captured outer/inner inode
-layout (`PFSBuilder.CaptureImageTree`). They are self-consistent snapshots of this library's image, not
+layout (`ProsperoPfsBuilder.CaptureImageTree`). They are self-consistent snapshots of this library's image, not
 byte matches of a specific reference: the outer superblock `<icv>` is the real captured superblock HMAC
 and the `<seed>` is all-zero, but because this library writes a superblock-first outer PFS while
 the reference layout is data-first the reported block indices and metadata offsets differ, and the nested

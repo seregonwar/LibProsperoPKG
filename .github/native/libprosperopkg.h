@@ -32,6 +32,17 @@ extern "C" {
 #define LPP_INNER_ZLIB    1
 #define LPP_INNER_KRAKEN  2
 
+/* Inner-image form (lpp_build_inner_image `form`). */
+#define LPP_FORM_PLAINTEXT         0
+#define LPP_FORM_ENCRYPTED         1
+#define LPP_FORM_COMPRESSED        2
+#define LPP_FORM_KRAKEN_COMPRESSED 3
+
+/* Package type (lpp_detect_package_type return value). */
+#define LPP_TYPE_META         0
+#define LPP_TYPE_FULL_RETAIL  1
+#define LPP_TYPE_FULL_DEBUG   2
+
 /* Returns a pointer to a static, NUL-terminated version string. */
 const char* lpp_version(void);
 
@@ -70,6 +81,63 @@ int lpp_build_package(const char* source_folder,
                       int inner_compression,
                       char* out_path,
                       int out_path_capacity);
+
+/*
+ * Detects the package type of the file at `path`. Returns the package type (LPP_TYPE_*), or -1
+ * when the file is not a recognized package or cannot be read (call lpp_last_error).
+ */
+int lpp_detect_package_type(const char* path);
+
+/*
+ * Lays a prepared folder out into an inner-PFS image. `form` selects the image form (LPP_FORM_*).
+ * `passcode` may be NULL/empty to accept the 32-zero default. The written image path is copied
+ * into `out_path`. Returns 0 on success; a negative value on failure (call lpp_last_error).
+ */
+int lpp_build_inner_image(const char* source_folder,
+                          const char* output_path,
+                          const char* content_id,
+                          const char* passcode,
+                          int form,
+                          char* out_path,
+                          int out_path_capacity);
+
+/*
+ * AES-XTS-encrypts a plaintext inner-PFS image in place, using keys derived from the content id
+ * and passcode. `passcode` may be NULL/empty to accept the 32-zero default. Returns 0 on success;
+ * a negative value on failure (call lpp_last_error).
+ */
+int lpp_encrypt_pfs_image(const char* pfs_image_path, const char* content_id, const char* passcode);
+
+/*
+ * Packs a plaintext PFS image into a PFSv3 PFSC (Kraken) container. A non-positive `level` or
+ * `block_size` selects the default (7 / 262144). Returns 0 on success; a negative value on
+ * failure (call lpp_last_error).
+ */
+int lpp_pack_pfs_image(const char* input_image_path, const char* output_path,
+                       int level, int block_size);
+
+/*
+ * Unpacks a PFSv3 PFSC container back into a plaintext PFS image. Returns the number of bytes
+ * written on success, or -1 on failure (call lpp_last_error).
+ */
+long long lpp_unpack_pfs_image(const char* input_path, const char* output_path);
+
+/* Returns 1 when `data` (`length` bytes) holds a SELF container, otherwise 0. */
+int lpp_is_self(const unsigned char* data, int length);
+
+/* Returns 1 when `data` (`length` bytes) holds a 64-bit ELF, otherwise 0. */
+int lpp_is_elf(const unsigned char* data, int length);
+
+/* Returns 1 when `data` (`length` bytes) holds a UCP archive, otherwise 0. */
+int lpp_is_ucp(const unsigned char* data, int length);
+
+/*
+ * Generates a fake-self from a 64-bit ELF. Pass out_buffer=NULL or capacity=0 to query the
+ * required size (returned positive, nothing written). On success returns the number of bytes
+ * written. Returns -1 and sets lpp_last_error on failure or when a non-zero buffer is too small.
+ */
+int lpp_make_fself(const unsigned char* elf, int elf_length,
+                   unsigned char* out_buffer, int capacity);
 
 #ifdef __cplusplus
 }
