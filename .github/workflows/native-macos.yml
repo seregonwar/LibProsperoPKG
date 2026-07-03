@@ -7,6 +7,10 @@ name: Native library (macOS)
 
 on:
   workflow_dispatch:
+    paths:
+      - 'LibProsperoPKG/src/**'
+      - '.github/native/**'
+      - '.github/workflows/native-macos.yml'
 
 permissions:
   contents: read
